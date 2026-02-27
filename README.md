@@ -28,6 +28,12 @@ A terminal dashboard for your GitHub pull requests. See everything at a glance â
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install chasenyc/tap/gh-inbox
+```
+
 ### From source
 
 Requires [Rust](https://rustup.rs) and the [GitHub CLI](https://cli.github.com) (`gh`).
