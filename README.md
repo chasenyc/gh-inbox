@@ -2,6 +2,10 @@
 
 A terminal dashboard for your GitHub pull requests. See everything at a glance — your open PRs, pending review requests, CI status, and more — without leaving the terminal.
 
+<p align="center">
+  <img src="demo.gif" alt="gh-inbox demo" width="960">
+</p>
+
 ## Features
 
 **My PRs** — All your open pull requests across every repo, with:
