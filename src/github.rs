@@ -5,7 +5,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::process::Command;
 
-use crate::types::{CiStatus, PullRequest, ReviewRequest, ReviewStatus};
+use crate::types::{CiStatus, MergeStatus, PullRequest, ReviewRequest, ReviewStatus};
 
 const GITHUB_API: &str = "https://api.github.com";
 
@@ -60,6 +60,7 @@ struct PrDetail {
     requested_reviewers: Vec<GitHubUser>,
     #[serde(default)]
     requested_teams: Vec<TeamRef>,
+    mergeable_state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +123,7 @@ impl GitHubClient {
                     url: item.html_url,
                     ci_status: CiStatus::None,
                     review_status: ReviewStatus::NoReviewers,
+                    merge_status: MergeStatus::Unknown,
                     updated_at: item.updated_at,
                     created_at: item.created_at,
                     is_draft: item.draft.unwrap_or(false),
@@ -302,6 +304,36 @@ impl GitHubClient {
         }
     }
 
+    pub async fn fetch_merge_status(&self, repo: &str, pr_url: &str) -> MergeStatus {
+        let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
+            Some(n) => n,
+            None => return MergeStatus::Unknown,
+        };
+
+        let detail_url = format!("{}/repos/{}/pulls/{}", GITHUB_API, repo, number);
+        let detail: PrDetail = match self
+            .auth_get(&detail_url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status().map_err(Into::into))
+        {
+            Ok(resp) => match resp.json().await {
+                Ok(d) => d,
+                Err(_) => return MergeStatus::Unknown,
+            },
+            Err(_) => return MergeStatus::Unknown,
+        };
+
+        match detail.mergeable_state.as_deref() {
+            Some("clean") => MergeStatus::Ready,
+            Some("blocked") => MergeStatus::Blocked,
+            Some("dirty") => MergeStatus::Conflicts,
+            Some("behind") => MergeStatus::Behind,
+            Some("unstable") => MergeStatus::Unstable,
+            _ => MergeStatus::Unknown,
+        }
+    }
+
     pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> bool {
         let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
             Some(n) => n,
@@ -326,6 +358,38 @@ impl GitHubClient {
             .requested_reviewers
             .iter()
             .any(|u| u.login.eq_ignore_ascii_case(&self.username))
+    }
+}
+
+#[derive(Deserialize)]
+struct ReleaseResponse {
+    tag_name: String,
+}
+
+/// Check if a newer version is available on GitHub Releases.
+/// Returns `Some("x.y.z")` if newer, `None` if current or on error.
+pub async fn check_for_update() -> Option<String> {
+    let client = Client::new();
+    let resp: ReleaseResponse = client
+        .get(format!("{}/repos/chasenyc/gh-inbox/releases/latest", GITHUB_API))
+        .header(USER_AGENT, "gh-inbox")
+        .header(ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    let latest = resp.tag_name.trim_start_matches('v');
+    let current = env!("CARGO_PKG_VERSION");
+
+    if latest != current {
+        Some(latest.to_string())
+    } else {
+        None
     }
 }
 

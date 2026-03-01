@@ -28,6 +28,7 @@ pub struct App {
     pub needs_refresh: bool,
     pub tick: u64,
     pub sort_newest_first: bool,
+    pub update_available: Option<String>,
 }
 
 impl App {
@@ -44,12 +45,12 @@ impl App {
             needs_refresh: false,
             tick: 0,
             sort_newest_first: true,
+            update_available: None,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         if self.state == AppState::Help {
-            // Any key closes help
             self.state = AppState::Ready;
             return;
         }
@@ -69,7 +70,13 @@ impl App {
                     self.state = AppState::Help;
                 }
             }
-            KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Tab => {
+                self.tab = match self.tab {
+                    Tab::MyPrs => Tab::ReviewRequests,
+                    Tab::ReviewRequests => Tab::MyPrs,
+                };
+            }
+            KeyCode::BackTab => {
                 self.tab = match self.tab {
                     Tab::MyPrs => Tab::ReviewRequests,
                     Tab::ReviewRequests => Tab::MyPrs,

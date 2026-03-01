@@ -31,10 +31,15 @@ enum DataMsg {
         index: usize,
         status: types::ReviewStatus,
     },
+    MergeStatusUpdate {
+        index: usize,
+        status: types::MergeStatus,
+    },
     DirectRequestUpdate {
         index: usize,
         is_direct: bool,
     },
+    UpdateAvailable(String),
     Error(String),
 }
 
@@ -80,8 +85,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
     let mut app = App::new();
     let (tx, mut rx) = mpsc::channel::<DataMsg>(64);
 
-    // Kick off initial fetch
+    // Kick off initial fetch + version check
     spawn_data_fetch(tx.clone());
+    spawn_update_check(tx.clone());
 
     loop {
         app.tick = app.tick.wrapping_add(1);
@@ -110,10 +116,18 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         pr.review_status = status;
                     }
                 }
+                DataMsg::MergeStatusUpdate { index, status } => {
+                    if let Some(pr) = app.my_prs.get_mut(index) {
+                        pr.merge_status = status;
+                    }
+                }
                 DataMsg::DirectRequestUpdate { index, is_direct } => {
                     if let Some(rr) = app.review_requests.get_mut(index) {
                         rr.is_direct = is_direct;
                     }
+                }
+                DataMsg::UpdateAvailable(version) => {
+                    app.update_available = Some(version);
                 }
                 DataMsg::Error(msg) => {
                     app.error_message = msg;
@@ -156,8 +170,10 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
         };
 
         // Fetch both lists concurrently
-        let (prs_result, reviews_result) =
-            tokio::join!(client.fetch_my_prs(), client.fetch_review_requests());
+        let (prs_result, reviews_result) = tokio::join!(
+            client.fetch_my_prs(),
+            client.fetch_review_requests()
+        );
 
         let my_prs = match prs_result {
             Ok(prs) => prs,
@@ -228,6 +244,14 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
                         status: review,
                     })
                     .await;
+
+                let merge = client.fetch_merge_status(&repo, &url).await;
+                let _ = tx
+                    .send(DataMsg::MergeStatusUpdate {
+                        index: i,
+                        status: merge,
+                    })
+                    .await;
             }));
         }
 
@@ -250,6 +274,14 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
 
         for h in handles {
             let _ = h.await;
+        }
+    });
+}
+
+fn spawn_update_check(tx: mpsc::Sender<DataMsg>) {
+    tokio::spawn(async move {
+        if let Some(version) = github::check_for_update().await {
+            let _ = tx.send(DataMsg::UpdateAvailable(version)).await;
         }
     });
 }

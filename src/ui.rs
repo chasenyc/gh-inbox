@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppState, Tab};
-use crate::types::{CiStatus, ReviewStatus};
+use crate::types::{CiStatus, MergeStatus, ReviewStatus};
 
 // ── Color Palette (Catppuccin Mocha-inspired) ───────────────────────
 
@@ -22,6 +22,7 @@ const GREEN: Color = Color::Rgb(166, 218, 149);
 const RED: Color = Color::Rgb(243, 139, 168);
 const YELLOW: Color = Color::Rgb(249, 226, 175);
 const PEACH: Color = Color::Rgb(250, 179, 135);
+const AMBER: Color = Color::Rgb(245, 186, 100);
 const SELECTED_BG: Color = Color::Rgb(40, 42, 58);
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -60,12 +61,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let footer = footer_hints();
 
-    let outer_block = Block::default()
+    let mut outer_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(BORDER))
         .title(title)
         .title_bottom(footer);
+
+    if let Some(version) = &app.update_available {
+        let update_line = Line::from(vec![
+            Span::styled("⚠ v", Style::default().fg(AMBER).bold()),
+            Span::styled(version.clone(), Style::default().fg(AMBER).bold()),
+            Span::styled(" available · ", Style::default().fg(AMBER).bold()),
+            Span::styled("brew upgrade gh-inbox ", Style::default().fg(AMBER)),
+        ])
+        .right_aligned();
+        outer_block = outer_block.title_bottom(update_line);
+    }
 
     let inner = outer_block.inner(area);
     frame.render_widget(outer_block, area);
@@ -119,13 +131,10 @@ fn footer_hints() -> Line<'static> {
 // ── Tab bar ─────────────────────────────────────────────────────────
 
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
-    let my_count = app.my_prs.len();
-    let rev_count = app.review_requests.len();
-
-    let is_my = app.tab == Tab::MyPrs;
-
-    let (my_dot, my_label, my_count_s) = tab_spans("My PRs", my_count, is_my);
-    let (rev_dot, rev_label, rev_count_s) = tab_spans("Reviews", rev_count, !is_my);
+    let (my_dot, my_label, my_count_s) =
+        tab_spans("My PRs", app.my_prs.len(), app.tab == Tab::MyPrs);
+    let (rev_dot, rev_label, rev_count_s) =
+        tab_spans("Reviews", app.review_requests.len(), app.tab == Tab::ReviewRequests);
 
     let line = Line::from(vec![
         Span::raw(" "),
@@ -182,6 +191,7 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
         Cell::from("TITLE"),
         Cell::from("CI"),
         Cell::from("REVIEW"),
+        Cell::from("MERGE"),
         Cell::from("AGE"),
     ])
     .style(Style::default().fg(OVERLAY_TEXT).bold())
@@ -259,6 +269,16 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
             };
 
+            // Merge status
+            let (merge_sym, merge_color) = match pr.merge_status {
+                MergeStatus::Ready => ("✓", GREEN),
+                MergeStatus::Blocked => ("⊘", RED),
+                MergeStatus::Conflicts => ("⚡", RED),
+                MergeStatus::Behind => ("⇣", YELLOW),
+                MergeStatus::Unstable => ("⚠", YELLOW),
+                MergeStatus::Unknown => ("…", OVERLAY_TEXT),
+            };
+
             // Age + stale
             let age = pr.age_string();
             let age_cell = if pr.is_stale() {
@@ -275,6 +295,7 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(pr.title.clone()).style(title_style),
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 review_cell,
+                Cell::from(merge_sym).style(Style::default().fg(merge_color)),
                 age_cell,
             ]);
 
@@ -291,6 +312,7 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Min(20),
         Constraint::Length(4),
         Constraint::Length(12),
+        Constraint::Length(7),
         Constraint::Length(10),
     ];
 
@@ -392,7 +414,7 @@ fn draw_loading(frame: &mut Frame, area: Rect, tick: u64) {
     let msg = Line::from(vec![
         Span::styled(format!("{}  ", spinner), Style::default().fg(BLUE)),
         Span::styled(
-            "Fetching pull requests…",
+            "Fetching data…",
             Style::default().fg(SUBTEXT),
         ),
     ]);
@@ -427,7 +449,7 @@ fn draw_error(frame: &mut Frame, area: Rect, message: &str) {
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 44u16;
-    let height = 20u16;
+    let height = 30u16;
     let x = area.width.saturating_sub(width) / 2;
     let y = area.height.saturating_sub(height) / 2;
     let overlay = Rect::new(x, y, width.min(area.width), height.min(area.height));
@@ -459,6 +481,30 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled(" you directly  ", Style::default().fg(SUBTEXT)),
             Span::styled("●", Style::default().fg(OVERLAY_TEXT)),
             Span::styled(" via team", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  MERGE STATUS",
+            Style::default().fg(LAVENDER).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ✓", Style::default().fg(GREEN)),
+            Span::styled(" Ready    ", Style::default().fg(SUBTEXT)),
+            Span::styled("⊘", Style::default().fg(RED)),
+            Span::styled(" Blocked", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⚡", Style::default().fg(RED)),
+            Span::styled(" Conflicts ", Style::default().fg(SUBTEXT)),
+            Span::styled("⇣", Style::default().fg(YELLOW)),
+            Span::styled(" Behind", Style::default().fg(SUBTEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⚠", Style::default().fg(YELLOW)),
+            Span::styled(" Unstable  ", Style::default().fg(SUBTEXT)),
+            Span::styled("…", Style::default().fg(OVERLAY_TEXT)),
+            Span::styled(" Unknown", Style::default().fg(SUBTEXT)),
         ]),
         Line::from(""),
         Line::from(Span::styled(

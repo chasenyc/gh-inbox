@@ -16,6 +16,16 @@ pub enum ReviewStatus {
     NoReviewers,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergeStatus {
+    Ready,
+    Blocked,
+    Conflicts,
+    Behind,
+    Unstable,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct PullRequest {
     pub repo: String,
@@ -23,6 +33,7 @@ pub struct PullRequest {
     pub url: String,
     pub ci_status: CiStatus,
     pub review_status: ReviewStatus,
+    pub merge_status: MergeStatus,
     pub updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub is_draft: bool,
