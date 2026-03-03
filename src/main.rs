@@ -234,18 +234,18 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await;
 
-                let ci = client.fetch_ci_status(&repo, &url).await;
-                let _ = tx.send(DataMsg::CiUpdate { index: i, status: ci }).await;
+                let (ci, (review, merge)) = tokio::join!(
+                    client.fetch_ci_status(&repo, &url),
+                    client.fetch_review_and_merge_status(&repo, &url),
+                );
 
-                let review = client.fetch_review_status(&repo, &url).await;
+                let _ = tx.send(DataMsg::CiUpdate { index: i, status: ci }).await;
                 let _ = tx
                     .send(DataMsg::ReviewUpdate {
                         index: i,
                         status: review,
                     })
                     .await;
-
-                let merge = client.fetch_merge_status(&repo, &url).await;
                 let _ = tx
                     .send(DataMsg::MergeStatusUpdate {
                         index: i,

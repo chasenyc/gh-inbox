@@ -243,13 +243,17 @@ impl GitHubClient {
         CiStatus::Passing
     }
 
-    pub async fn fetch_review_status(&self, repo: &str, pr_url: &str) -> ReviewStatus {
+    pub async fn fetch_review_and_merge_status(
+        &self,
+        repo: &str,
+        pr_url: &str,
+    ) -> (ReviewStatus, MergeStatus) {
         let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
             Some(n) => n,
-            None => return ReviewStatus::NoReviewers,
+            None => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
         };
 
-        // Fetch PR details to check if reviewers are assigned
+        // Fetch PR details (reviewers + mergeable_state)
         let detail_url = format!("{}/repos/{}/pulls/{}", GITHUB_API, repo, number);
         let detail: PrDetail = match self
             .auth_get(&detail_url)
@@ -259,9 +263,19 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(d) => d,
-                Err(_) => return ReviewStatus::NoReviewers,
+                Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
             },
-            Err(_) => return ReviewStatus::NoReviewers,
+            Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
+        };
+
+        // Extract merge status from the same response
+        let merge_status = match detail.mergeable_state.as_deref() {
+            Some("clean") => MergeStatus::Ready,
+            Some("blocked") => MergeStatus::Blocked,
+            Some("dirty") => MergeStatus::Conflicts,
+            Some("behind") => MergeStatus::Behind,
+            Some("unstable") => MergeStatus::Unstable,
+            _ => MergeStatus::Unknown,
         };
 
         // Fetch submitted reviews
@@ -277,9 +291,9 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(r) => r,
-                Err(_) => return ReviewStatus::NoReviewers,
+                Err(_) => return (ReviewStatus::NoReviewers, merge_status),
             },
-            Err(_) => return ReviewStatus::NoReviewers,
+            Err(_) => return (ReviewStatus::NoReviewers, merge_status),
         };
 
         let has_reviewers = !detail.requested_reviewers.is_empty()
@@ -287,7 +301,7 @@ impl GitHubClient {
             || !reviews.is_empty();
 
         if !has_reviewers {
-            return ReviewStatus::NoReviewers;
+            return (ReviewStatus::NoReviewers, merge_status);
         }
 
         // Keep only the latest review per author (reviews are returned chronologically)
@@ -308,43 +322,15 @@ impl GitHubClient {
         let has_approved = latest_by_author.values().any(|&s| s == "APPROVED");
         let has_changes = latest_by_author.values().any(|&s| s == "CHANGES_REQUESTED");
 
-        if has_changes {
+        let review_status = if has_changes {
             ReviewStatus::ChangesRequested
         } else if has_approved {
             ReviewStatus::Approved
         } else {
             ReviewStatus::Pending
-        }
-    }
-
-    pub async fn fetch_merge_status(&self, repo: &str, pr_url: &str) -> MergeStatus {
-        let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
-            Some(n) => n,
-            None => return MergeStatus::Unknown,
         };
 
-        let detail_url = format!("{}/repos/{}/pulls/{}", GITHUB_API, repo, number);
-        let detail: PrDetail = match self
-            .auth_get(&detail_url)
-            .send()
-            .await
-            .and_then(|r| r.error_for_status().map_err(Into::into))
-        {
-            Ok(resp) => match resp.json().await {
-                Ok(d) => d,
-                Err(_) => return MergeStatus::Unknown,
-            },
-            Err(_) => return MergeStatus::Unknown,
-        };
-
-        match detail.mergeable_state.as_deref() {
-            Some("clean") => MergeStatus::Ready,
-            Some("blocked") => MergeStatus::Blocked,
-            Some("dirty") => MergeStatus::Conflicts,
-            Some("behind") => MergeStatus::Behind,
-            Some("unstable") => MergeStatus::Unstable,
-            _ => MergeStatus::Unknown,
-        }
+        (review_status, merge_status)
     }
 
     pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> bool {
