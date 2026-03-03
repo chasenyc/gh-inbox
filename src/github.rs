@@ -52,6 +52,7 @@ struct CheckRun {
 #[derive(Deserialize)]
 struct Review {
     state: String,
+    user: Option<GitHubUser>,
 }
 
 #[derive(Deserialize)]
@@ -289,11 +290,23 @@ impl GitHubClient {
             return ReviewStatus::NoReviewers;
         }
 
-        // Check review states (latest matters most)
-        let has_approved = reviews.iter().any(|r| r.state == "APPROVED");
-        let has_changes = reviews
-            .iter()
-            .any(|r| r.state == "CHANGES_REQUESTED");
+        // Keep only the latest review per author (reviews are returned chronologically)
+        let mut latest_by_author: std::collections::HashMap<String, &str> =
+            std::collections::HashMap::new();
+        for review in &reviews {
+            if review.state == "COMMENTED" {
+                continue;
+            }
+            let author = review
+                .user
+                .as_ref()
+                .map(|u| u.login.clone())
+                .unwrap_or_default();
+            latest_by_author.insert(author, &review.state);
+        }
+
+        let has_approved = latest_by_author.values().any(|&s| s == "APPROVED");
+        let has_changes = latest_by_author.values().any(|&s| s == "CHANGES_REQUESTED");
 
         if has_changes {
             ReviewStatus::ChangesRequested
