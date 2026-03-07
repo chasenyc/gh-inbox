@@ -461,11 +461,23 @@ pub async fn check_for_update() -> Option<String> {
     let latest = resp.tag_name.trim_start_matches('v');
     let current = env!("CARGO_PKG_VERSION");
 
-    if latest != current {
+    if version_is_newer(latest, current) {
         Some(latest.to_string())
     } else {
         None
     }
+}
+
+/// Returns true if `a` is a strictly newer semver than `b`.
+fn version_is_newer(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> (u64, u64, u64) {
+        let mut parts = s.splitn(3, '.');
+        let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        (major, minor, patch)
+    };
+    parse(a) > parse(b)
 }
 
 fn get_gh_token() -> Result<String> {
