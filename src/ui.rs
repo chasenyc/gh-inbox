@@ -50,7 +50,7 @@ fn repo_color(repo: &str) -> Color {
 
 // ── Main draw ───────────────────────────────────────────────────────
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     // Outer border wrapping the entire app
@@ -178,7 +178,7 @@ fn tab_spans<'a>(label: &'a str, count: Option<usize>, active: bool) -> (Span<'a
 
 // ── Content dispatch ────────────────────────────────────────────────
 
-fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_content(frame: &mut Frame, area: Rect, app: &mut App) {
     match app.tab {
         Tab::MyPrs => draw_my_prs_table(frame, area, app),
         Tab::ReviewRequests => draw_reviews_table(frame, area, app),
@@ -188,7 +188,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
 
 // ── My PRs table ────────────────────────────────────────────────────
 
-fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.my_prs.is_empty() {
         draw_centered_message(frame, area, "✓  No open PRs — nice work!", OVERLAY_TEXT);
         return;
@@ -298,20 +298,14 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(Span::styled(age, Style::default().fg(SUBTEXT)))
             };
 
-            let row = Row::new(vec![
+            Row::new(vec![
                 repo_cell,
                 Cell::from(pr.title.clone()).style(title_style),
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 review_cell,
                 Cell::from(merge_sym).style(Style::default().fg(merge_color)),
                 age_cell,
-            ]);
-
-            if selected {
-                row.style(Style::default().bg(SELECTED_BG))
-            } else {
-                row
-            }
+            ])
         })
         .collect();
 
@@ -326,14 +320,16 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().padding(Padding::horizontal(1)));
+        .block(Block::default().padding(Padding::horizontal(1)))
+        .row_highlight_style(Style::default().bg(SELECTED_BG))
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
 
-    frame.render_widget(table, area);
+    frame.render_stateful_widget(table, area, &mut app.my_prs_table_state);
 }
 
 // ── Review Requests table ───────────────────────────────────────────
 
-fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.review_requests.is_empty() {
         draw_centered_message(frame, area, "No pending review requests", OVERLAY_TEXT);
         return;
@@ -383,19 +379,13 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(Span::styled("●", Style::default().fg(OVERLAY_TEXT)))
             };
 
-            let row = Row::new(vec![
+            Row::new(vec![
                 repo_cell,
                 Cell::from(rr.title.clone()).style(title_style),
                 Cell::from(rr.author.clone()).style(Style::default().fg(SUBTEXT)),
                 Cell::from(rr.age_string()).style(Style::default().fg(SUBTEXT)),
                 direct_cell,
-            ]);
-
-            if selected {
-                row.style(Style::default().bg(SELECTED_BG))
-            } else {
-                row
-            }
+            ])
         })
         .collect();
 
@@ -409,9 +399,11 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &App) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().padding(Padding::horizontal(1)));
+        .block(Block::default().padding(Padding::horizontal(1)))
+        .row_highlight_style(Style::default().bg(SELECTED_BG))
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
 
-    frame.render_widget(table, area);
+    frame.render_stateful_widget(table, area, &mut app.reviews_table_state);
 }
 
 // ── Stats view ──────────────────────────────────────────────────────
@@ -421,7 +413,7 @@ const SURFACE_BRIGHT: Color = Color::Rgb(49, 50, 68);
 // Block elements for sub-cell resolution: each gives 1/8th fill
 const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-fn draw_stats(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_stats(frame: &mut Frame, area: Rect, app: &mut App) {
     let (merged, reviewed) = match (&app.merged_stats, &app.reviewed_stats) {
         (Some(m), Some(r)) => (m, r),
         _ => {

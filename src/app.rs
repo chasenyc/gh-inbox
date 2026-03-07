@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::widgets::TableState;
 
 use crate::types::{PullRequest, ReviewRequest, WeeklyStats};
 
@@ -22,8 +23,8 @@ pub struct App {
     pub state: AppState,
     pub my_prs: Vec<PullRequest>,
     pub review_requests: Vec<ReviewRequest>,
-    pub my_prs_index: usize,
-    pub reviews_index: usize,
+    pub my_prs_table_state: TableState,
+    pub reviews_table_state: TableState,
     pub error_message: String,
     pub should_quit: bool,
     pub needs_refresh: bool,
@@ -41,8 +42,8 @@ impl App {
             state: AppState::Loading,
             my_prs: Vec::new(),
             review_requests: Vec::new(),
-            my_prs_index: 0,
-            reviews_index: 0,
+            my_prs_table_state: TableState::default().with_selected(0),
+            reviews_table_state: TableState::default().with_selected(0),
             error_message: String::new(),
             should_quit: false,
             needs_refresh: false,
@@ -109,9 +110,9 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let (index, len) = match self.tab {
-            Tab::MyPrs => (&mut self.my_prs_index, self.my_prs.len()),
-            Tab::ReviewRequests => (&mut self.reviews_index, self.review_requests.len()),
+        let (table_state, len) = match self.tab {
+            Tab::MyPrs => (&mut self.my_prs_table_state, self.my_prs.len()),
+            Tab::ReviewRequests => (&mut self.reviews_table_state, self.review_requests.len()),
             Tab::Stats => return,
         };
 
@@ -119,17 +120,21 @@ impl App {
             return;
         }
 
-        let new_index = (*index as i32 + delta).clamp(0, len as i32 - 1) as usize;
-        *index = new_index;
+        let current = table_state.selected().unwrap_or(0);
+        let new_index = (current as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        table_state.select(Some(new_index));
     }
 
     fn open_selected(&self) {
         let url = match self.tab {
-            Tab::MyPrs => self.my_prs.get(self.my_prs_index).map(|pr| &pr.url),
-            Tab::ReviewRequests => self
-                .review_requests
-                .get(self.reviews_index)
-                .map(|rr| &rr.url),
+            Tab::MyPrs => {
+                let i = self.my_prs_table_state.selected().unwrap_or(0);
+                self.my_prs.get(i).map(|pr| &pr.url)
+            }
+            Tab::ReviewRequests => {
+                let i = self.reviews_table_state.selected().unwrap_or(0);
+                self.review_requests.get(i).map(|rr| &rr.url)
+            }
             Tab::Stats => None,
         };
 
@@ -140,8 +145,8 @@ impl App {
 
     pub fn selected_index(&self) -> usize {
         match self.tab {
-            Tab::MyPrs => self.my_prs_index,
-            Tab::ReviewRequests => self.reviews_index,
+            Tab::MyPrs => self.my_prs_table_state.selected().unwrap_or(0),
+            Tab::ReviewRequests => self.reviews_table_state.selected().unwrap_or(0),
             Tab::Stats => 0,
         }
     }
@@ -159,15 +164,17 @@ impl App {
     }
 
     pub fn clamp_indices(&mut self) {
+        let my_prs_sel = self.my_prs_table_state.selected().unwrap_or(0);
         if !self.my_prs.is_empty() {
-            self.my_prs_index = self.my_prs_index.min(self.my_prs.len() - 1);
+            self.my_prs_table_state.select(Some(my_prs_sel.min(self.my_prs.len() - 1)));
         } else {
-            self.my_prs_index = 0;
+            self.my_prs_table_state.select(Some(0));
         }
+        let reviews_sel = self.reviews_table_state.selected().unwrap_or(0);
         if !self.review_requests.is_empty() {
-            self.reviews_index = self.reviews_index.min(self.review_requests.len() - 1);
+            self.reviews_table_state.select(Some(reviews_sel.min(self.review_requests.len() - 1)));
         } else {
-            self.reviews_index = 0;
+            self.reviews_table_state.select(Some(0));
         }
     }
 }

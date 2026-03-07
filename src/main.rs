@@ -96,7 +96,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
 
     loop {
         app.tick = app.tick.wrapping_add(1);
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         // Check for incoming data messages (non-blocking)
         while let Ok(msg) = rx.try_recv() {
