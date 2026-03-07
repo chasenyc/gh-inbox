@@ -1,5 +1,6 @@
 mod app;
 mod github;
+mod snake;
 mod types;
 mod ui;
 
@@ -96,6 +97,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
 
     loop {
         app.tick = app.tick.wrapping_add(1);
+        if let Some(ref mut game) = app.snake_game {
+            game.tick();
+        }
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         // Check for incoming data messages (non-blocking)
@@ -154,7 +158,12 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
 
 
         // Poll for keyboard events with a short timeout so we can process data messages
-        if event::poll(std::time::Duration::from_millis(50))? {
+        let poll_duration = if app.snake_game.is_some() {
+            std::time::Duration::from_millis(16) // ~60fps during snake
+        } else {
+            std::time::Duration::from_millis(50)
+        };
+        if event::poll(poll_duration)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     app.handle_key(key);

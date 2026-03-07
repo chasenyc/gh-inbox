@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 
+use crate::snake::SnakeGame;
 use crate::types::{PullRequest, ReviewRequest, WeeklyStats};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +34,7 @@ pub struct App {
     pub update_available: Option<String>,
     pub merged_stats: Option<WeeklyStats>,
     pub reviewed_stats: Option<WeeklyStats>,
+    pub snake_game: Option<SnakeGame>,
 }
 
 impl App {
@@ -52,6 +54,7 @@ impl App {
             update_available: None,
             merged_stats: None,
             reviewed_stats: None,
+            snake_game: None,
         }
     }
 
@@ -59,6 +62,26 @@ impl App {
         if self.state == AppState::Help {
             self.state = AppState::Ready;
             return;
+        }
+
+        // Snake game input handling
+        if let Some(ref mut game) = self.snake_game {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.snake_game = None;
+                    return;
+                }
+                KeyCode::Char(' ') if game.game_over => {
+                    let w = game.width;
+                    let h = game.height;
+                    self.snake_game = Some(SnakeGame::new(w, h));
+                    return;
+                }
+                _ => {
+                    game.handle_key(key.code);
+                    return;
+                }
+            }
         }
 
         match key.code {
@@ -102,6 +125,11 @@ impl App {
             KeyCode::Char('1') => self.tab = Tab::MyPrs,
             KeyCode::Char('2') => self.tab = Tab::ReviewRequests,
             KeyCode::Char('3') => self.tab = Tab::Stats,
+            KeyCode::Char(' ') => {
+                if self.tab == Tab::MyPrs && self.my_prs.is_empty() && self.state == AppState::Ready {
+                    self.snake_game = Some(SnakeGame::new(30, 15));
+                }
+            }
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::Enter => self.open_selected(),

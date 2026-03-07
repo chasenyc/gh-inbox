@@ -53,6 +53,7 @@ fn repo_color(repo: &str) -> Color {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+
     // Outer border wrapping the entire app
     let title = Line::from(vec![
         Span::styled(" ◆ ", Style::default().fg(BLUE)),
@@ -190,9 +191,15 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.my_prs.is_empty() {
-        draw_centered_message(frame, area, "✓  No open PRs — nice work!", OVERLAY_TEXT);
+        if app.snake_game.is_some() {
+            draw_snake_game(frame, area, app);
+        } else {
+            draw_empty_prs(frame, area);
+        }
         return;
     }
+    // Clear snake game if PRs appeared
+    app.snake_game = None;
 
     let header = Row::new(vec![
         Cell::from("   REPO"),
@@ -404,6 +411,134 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
 
     frame.render_stateful_widget(table, area, &mut app.reviews_table_state);
+}
+
+// ── Empty PR state ──────────────────────────────────────────────────
+
+fn draw_empty_prs(frame: &mut Frame, area: Rect) {
+    let centered = vertical_center(area, 3);
+    let lines = vec![
+        Line::from(Span::styled(
+            "No open PRs — nice work!",
+            Style::default().fg(SUBTEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "⎵",
+            Style::default().fg(SUBTEXT).bold(),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        centered,
+    );
+}
+
+// ── Snake game ──────────────────────────────────────────────────────
+
+const SNAKE_HEAD: &str = "██";
+const SNAKE_BODY: &str = "██";
+const SNAKE_FOOD: &str = "⎇ ";
+
+fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
+    let game = match app.snake_game.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+
+    let game_w = game.width;
+    let game_h = game.height;
+
+    let needed_w = game_w * 2 + 2;
+    let needed_h = game_h + 4;
+    if area.width < needed_w || area.height < needed_h {
+        draw_centered_message(frame, area, "Window too small for snake!", OVERLAY_TEXT);
+        return;
+    }
+
+    // Border block
+    let game_pixel_w = game_w * 2 + 2; // +2 for borders
+    let game_pixel_h = game_h + 2; // +2 for borders
+    let x = area.x + (area.width.saturating_sub(game_pixel_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(game_pixel_h + 2)) / 2; // +2 for score line
+
+    let game_area = Rect::new(x, y, game_pixel_w, game_pixel_h);
+
+    let score_text = format!(" Score: {} ", game.score);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(BORDER))
+        .title(Span::styled(
+            " eat the branch ",
+            Style::default().fg(LAVENDER).bold(),
+        ))
+        .title(
+            Line::from(Span::styled(score_text, Style::default().fg(GREEN)))
+                .right_aligned(),
+        );
+
+    let inner = block.inner(game_area);
+    frame.render_widget(block, game_area);
+
+    // Draw food
+    let food = &game.food;
+    let fx = inner.x + food.x as u16 * 2;
+    let fy = inner.y + food.y as u16;
+    if fx + 2 <= inner.x + inner.width && fy < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled(SNAKE_FOOD, Style::default().fg(RED))),
+            Rect::new(fx, fy, 2, 1),
+        );
+    }
+
+    // Draw snake
+    for (i, seg) in game.snake.iter().enumerate() {
+        let sx = inner.x + seg.x as u16 * 2;
+        let sy = inner.y + seg.y as u16;
+        if sx + 2 > inner.x + inner.width || sy >= inner.y + inner.height {
+            continue;
+        }
+        let (ch, color) = if i == 0 {
+            (SNAKE_HEAD, BLUE)
+        } else {
+            (SNAKE_BODY, LAVENDER)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(ch, Style::default().fg(color))),
+            Rect::new(sx, sy, 2, 1),
+        );
+    }
+
+    // Game over overlay
+    if game.game_over {
+        let msg_y = y + game_pixel_h + 1;
+        if msg_y < area.y + area.height {
+            let lines = vec![Line::from(vec![
+                Span::styled("Game Over! ", Style::default().fg(RED).bold()),
+                Span::styled("space", Style::default().fg(SUBTEXT).bold()),
+                Span::styled(" restart  ", Style::default().fg(OVERLAY_TEXT)),
+                Span::styled("q", Style::default().fg(SUBTEXT).bold()),
+                Span::styled(" quit", Style::default().fg(OVERLAY_TEXT)),
+            ])];
+            frame.render_widget(
+                Paragraph::new(lines).alignment(Alignment::Center),
+                Rect::new(area.x, msg_y, area.width, 1),
+            );
+        }
+    } else {
+        let hint_y = y + game_pixel_h + 1;
+        if hint_y < area.y + area.height {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "arrow keys to move · q to quit",
+                    Style::default().fg(OVERLAY_TEXT),
+                ))
+                .alignment(Alignment::Center),
+                Rect::new(area.x, hint_y, area.width, 1),
+            );
+        }
+    }
 }
 
 // ── Stats view ──────────────────────────────────────────────────────
