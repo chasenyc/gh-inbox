@@ -1,11 +1,12 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::types::{PullRequest, ReviewRequest};
+use crate::types::{PullRequest, ReviewRequest, WeeklyStats};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tab {
     MyPrs,
     ReviewRequests,
+    Stats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,6 +30,8 @@ pub struct App {
     pub tick: u64,
     pub sort_newest_first: bool,
     pub update_available: Option<String>,
+    pub merged_stats: Option<WeeklyStats>,
+    pub reviewed_stats: Option<WeeklyStats>,
 }
 
 impl App {
@@ -46,6 +49,8 @@ impl App {
             tick: 0,
             sort_newest_first: true,
             update_available: None,
+            merged_stats: None,
+            reviewed_stats: None,
         }
     }
 
@@ -63,6 +68,8 @@ impl App {
                 if self.state == AppState::Ready || self.state == AppState::Error {
                     self.needs_refresh = true;
                     self.state = AppState::Loading;
+                    self.merged_stats = None;
+                    self.reviewed_stats = None;
                 }
             }
             KeyCode::Char('?') => {
@@ -73,13 +80,15 @@ impl App {
             KeyCode::Tab => {
                 self.tab = match self.tab {
                     Tab::MyPrs => Tab::ReviewRequests,
-                    Tab::ReviewRequests => Tab::MyPrs,
+                    Tab::ReviewRequests => Tab::Stats,
+                    Tab::Stats => Tab::MyPrs,
                 };
             }
             KeyCode::BackTab => {
                 self.tab = match self.tab {
-                    Tab::MyPrs => Tab::ReviewRequests,
+                    Tab::MyPrs => Tab::Stats,
                     Tab::ReviewRequests => Tab::MyPrs,
+                    Tab::Stats => Tab::ReviewRequests,
                 };
             }
             KeyCode::Char('s') => {
@@ -91,6 +100,7 @@ impl App {
             }
             KeyCode::Char('1') => self.tab = Tab::MyPrs,
             KeyCode::Char('2') => self.tab = Tab::ReviewRequests,
+            KeyCode::Char('3') => self.tab = Tab::Stats,
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::Enter => self.open_selected(),
@@ -102,6 +112,7 @@ impl App {
         let (index, len) = match self.tab {
             Tab::MyPrs => (&mut self.my_prs_index, self.my_prs.len()),
             Tab::ReviewRequests => (&mut self.reviews_index, self.review_requests.len()),
+            Tab::Stats => return,
         };
 
         if len == 0 {
@@ -119,6 +130,7 @@ impl App {
                 .review_requests
                 .get(self.reviews_index)
                 .map(|rr| &rr.url),
+            Tab::Stats => None,
         };
 
         if let Some(url) = url {
@@ -130,6 +142,7 @@ impl App {
         match self.tab {
             Tab::MyPrs => self.my_prs_index,
             Tab::ReviewRequests => self.reviews_index,
+            Tab::Stats => 0,
         }
     }
 

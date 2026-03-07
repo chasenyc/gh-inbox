@@ -132,9 +132,11 @@ fn footer_hints() -> Line<'static> {
 
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let (my_dot, my_label, my_count_s) =
-        tab_spans("My PRs", app.my_prs.len(), app.tab == Tab::MyPrs);
+        tab_spans("My PRs", Some(app.my_prs.len()), app.tab == Tab::MyPrs);
     let (rev_dot, rev_label, rev_count_s) =
-        tab_spans("Reviews", app.review_requests.len(), app.tab == Tab::ReviewRequests);
+        tab_spans("Reviews", Some(app.review_requests.len()), app.tab == Tab::ReviewRequests);
+    let (stats_dot, stats_label, stats_count_s) =
+        tab_spans("Stats", None, app.tab == Tab::Stats);
 
     let line = Line::from(vec![
         Span::raw(" "),
@@ -145,26 +147,31 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
         rev_dot,
         rev_label,
         rev_count_s,
+        Span::raw("       "),
+        stats_dot,
+        stats_label,
+        stats_count_s,
     ]);
 
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn tab_spans<'a>(label: &'a str, count: usize, active: bool) -> (Span<'a>, Span<'a>, Span<'a>) {
+fn tab_spans<'a>(label: &'a str, count: Option<usize>, active: bool) -> (Span<'a>, Span<'a>, Span<'a>) {
+    let count_str = match count {
+        Some(c) => format!("  {}", c),
+        None => String::new(),
+    };
     if active {
         (
             Span::styled("● ", Style::default().fg(BLUE)),
             Span::styled(label, Style::default().fg(TEXT).bold()),
-            Span::styled(format!("  {}", count), Style::default().fg(BLUE)),
+            Span::styled(count_str, Style::default().fg(BLUE)),
         )
     } else {
         (
             Span::styled("○ ", Style::default().fg(OVERLAY_TEXT)),
             Span::styled(label, Style::default().fg(OVERLAY_TEXT)),
-            Span::styled(
-                format!("  {}", count),
-                Style::default().fg(OVERLAY_TEXT),
-            ),
+            Span::styled(count_str, Style::default().fg(OVERLAY_TEXT)),
         )
     }
 }
@@ -175,6 +182,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
     match app.tab {
         Tab::MyPrs => draw_my_prs_table(frame, area, app),
         Tab::ReviewRequests => draw_reviews_table(frame, area, app),
+        Tab::Stats => draw_stats(frame, area, app),
     }
 }
 
@@ -406,6 +414,310 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(table, area);
 }
 
+// ── Stats view ──────────────────────────────────────────────────────
+
+const SURFACE_BRIGHT: Color = Color::Rgb(49, 50, 68);
+
+// Block elements for sub-cell resolution: each gives 1/8th fill
+const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+fn draw_stats(frame: &mut Frame, area: Rect, app: &App) {
+    let (merged, reviewed) = match (&app.merged_stats, &app.reviewed_stats) {
+        (Some(m), Some(r)) => (m, r),
+        _ => {
+            draw_loading(frame, area, app.tick);
+            return;
+        }
+    };
+
+    let chunks = Layout::vertical([
+        Constraint::Length(5), // metric cards
+        Constraint::Min(8),   // charts
+    ])
+    .split(area);
+
+    draw_metric_cards(frame, chunks[0], merged, reviewed);
+
+    let chart_cols = Layout::horizontal([
+        Constraint::Percentage(50),
+        Constraint::Percentage(50),
+    ])
+    .split(chunks[1]);
+
+    draw_gradient_chart(frame, chart_cols[0], "PRs Merged", "ship it 🚀", merged, &[
+        Color::Rgb(22, 78, 56),    // dark green
+        Color::Rgb(34, 120, 80),
+        Color::Rgb(74, 172, 114),
+        Color::Rgb(166, 218, 149), // bright green
+    ]);
+    draw_gradient_chart(frame, chart_cols[1], "PRs Reviewed", "unblocking others", reviewed, &[
+        Color::Rgb(60, 46, 100),   // dark purple
+        Color::Rgb(100, 72, 160),
+        Color::Rgb(150, 120, 210),
+        Color::Rgb(180, 190, 254), // bright lavender
+    ]);
+}
+
+fn draw_metric_cards(
+    frame: &mut Frame,
+    area: Rect,
+    merged: &crate::types::WeeklyStats,
+    reviewed: &crate::types::WeeklyStats,
+) {
+    let card_area = inset_horizontal(area, 1);
+    let cards = Layout::horizontal([
+        Constraint::Ratio(1, 6),
+        Constraint::Ratio(1, 6),
+        Constraint::Ratio(1, 6),
+        Constraint::Ratio(1, 6),
+        Constraint::Ratio(1, 6),
+        Constraint::Ratio(1, 6),
+    ])
+    .horizontal_margin(1)
+    .split(card_area);
+
+    let merged_trend = merged.trend();
+    let reviewed_trend = reviewed.trend();
+
+    draw_metric_card(frame, cards[0], "MERGED", &merged.total().to_string(), "total", GREEN);
+    draw_metric_card(frame, cards[1], "AVG/WEEK", &format!("{:.1}", merged.avg_per_week()), "merged", GREEN);
+    draw_metric_card(frame, cards[2], "THIS WEEK", &merged.current_week().to_string(), trend_label(merged_trend), trend_color(merged_trend));
+    draw_metric_card(frame, cards[3], "REVIEWED", &reviewed.total().to_string(), "total", LAVENDER);
+    draw_metric_card(frame, cards[4], "AVG/WEEK", &format!("{:.1}", reviewed.avg_per_week()), "reviewed", LAVENDER);
+    draw_metric_card(frame, cards[5], "THIS WEEK", &reviewed.current_week().to_string(), trend_label(reviewed_trend), trend_color(reviewed_trend));
+}
+
+fn trend_label(trend: &str) -> &str {
+    match trend {
+        "up" => "trending up",
+        "down" => "trending down",
+        "stable" => "stable",
+        _ => "",
+    }
+}
+
+fn trend_color(trend: &str) -> Color {
+    match trend {
+        "up" => GREEN,
+        "down" => RED,
+        "stable" => SUBTEXT,
+        _ => OVERLAY_TEXT,
+    }
+}
+
+fn draw_metric_card(frame: &mut Frame, area: Rect, label: &str, value: &str, subtitle: &str, accent: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(SURFACE_BRIGHT))
+        .style(Style::default());
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+
+    let lines = vec![
+        Line::from(Span::styled(label, Style::default().fg(OVERLAY_TEXT))).centered(),
+        Line::from(Span::styled(value, Style::default().fg(accent).bold())).centered(),
+        Line::from(Span::styled(subtitle, Style::default().fg(OVERLAY_TEXT))).centered(),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_gradient_chart(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    subtitle: &str,
+    stats: &crate::types::WeeklyStats,
+    gradient: &[Color],
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(SURFACE_BRIGHT))
+        .style(Style::default())
+        .title(Line::from(vec![
+            Span::styled(format!(" {} ", title), Style::default().fg(TEXT).bold()),
+            Span::styled(format!(" {} ", subtitle), Style::default().fg(OVERLAY_TEXT)),
+        ]))
+        .padding(Padding::new(2, 2, 1, 0));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 4 || inner.width < 10 {
+        return;
+    }
+
+    // Reserve space: 1 row for labels, 1 row for axis line
+    let chart_height = inner.height.saturating_sub(2) as usize;
+    let max_val = stats.max().max(1);
+
+    let num_weeks = stats.weeks.len();
+    // Each slot = bar chars + 1 gap. Y-axis takes 4 chars (3 digits + 1 space).
+    let y_axis_width = 4usize;
+    let slot_width = ((inner.width as usize).saturating_sub(y_axis_width)) / num_weeks.max(1);
+    let slot_width = slot_width.max(2).min(7);
+    let bar_width = slot_width.saturating_sub(1).max(1); // bar chars within slot (rest is gap)
+
+    // Build each row of the chart from top to bottom
+    for row in 0..chart_height {
+        let y = inner.y + row as u16;
+        let row_from_bottom = chart_height - 1 - row;
+        // This row represents values in range [row_from_bottom * max_val / chart_height, ...]
+        let threshold = row_from_bottom as f64 * max_val as f64 / chart_height as f64;
+
+        let mut spans: Vec<Span> = Vec::new();
+
+        // Y-axis label (4 chars wide: 3 digits + 1 space)
+        let mid_row = chart_height / 2;
+        let mid_val = max_val / 2;
+        if row == 0 {
+            spans.push(Span::styled(
+                format!("{:>3} ", max_val),
+                Style::default().fg(OVERLAY_TEXT),
+            ));
+        } else if row == mid_row && mid_val > 0 {
+            spans.push(Span::styled(
+                format!("{:>3} ", mid_val),
+                Style::default().fg(OVERLAY_TEXT),
+            ));
+        } else if row == chart_height - 1 {
+            spans.push(Span::styled("  0 ", Style::default().fg(OVERLAY_TEXT)));
+        } else {
+            spans.push(Span::raw("    "));
+        }
+
+        for (_i, week) in stats.weeks.iter().enumerate() {
+            let val = week.count as f64;
+            // How much of this cell is filled?
+            let cell_bottom = threshold;
+            let cell_top = cell_bottom + max_val as f64 / chart_height as f64;
+
+            let fill_fraction = if val >= cell_top {
+                1.0
+            } else if val > cell_bottom {
+                (val - cell_bottom) / (cell_top - cell_bottom)
+            } else {
+                0.0
+            };
+
+            let block_index = (fill_fraction * 8.0).round() as usize;
+            let block_index = block_index.min(8);
+            let ch = BLOCKS[block_index];
+
+            // Gradient color based on height position
+            let gradient_pos = if chart_height > 1 {
+                row_from_bottom as f64 / (chart_height - 1) as f64
+            } else {
+                1.0
+            };
+            let color = gradient_color(gradient, gradient_pos);
+
+            let bar_str: String = std::iter::repeat(ch).take(bar_width).collect();
+
+            if block_index > 0 {
+                spans.push(Span::styled(bar_str, Style::default().fg(color)));
+            } else {
+                spans.push(Span::raw(" ".repeat(bar_width)));
+            }
+
+            // Gap between bars (1 char to fill the slot)
+            let gap = slot_width - bar_width;
+            if gap > 0 {
+                spans.push(Span::raw(" ".repeat(gap)));
+            }
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+    }
+
+    // Axis line
+    let axis_y = inner.y + chart_height as u16;
+    let axis_line: String = " ".repeat(y_axis_width)
+        + &"─".repeat(inner.width.saturating_sub(y_axis_width as u16) as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(axis_line, Style::default().fg(SURFACE_BRIGHT))),
+        Rect::new(inner.x, axis_y, inner.width, 1),
+    );
+
+    // Week labels
+    let label_y = inner.y + chart_height as u16 + 1;
+    if label_y < inner.y + inner.height {
+        let mut label_spans: Vec<Span> = Vec::new();
+        label_spans.push(Span::raw(" ".repeat(y_axis_width))); // y-axis offset
+
+        for (i, _) in stats.weeks.iter().enumerate() {
+            let label = stats.label(i);
+            // Only show every Nth label to avoid crowding
+            let show_label = if num_weeks <= 6 {
+                true
+            } else if num_weeks <= 12 {
+                i % 2 == 0 || i == num_weeks - 1
+            } else {
+                i % 3 == 0 || i == num_weeks - 1
+            };
+
+            if show_label {
+                let padded = format!("{:<width$}", label, width = slot_width);
+                label_spans.push(Span::styled(
+                    padded.chars().take(slot_width).collect::<String>(),
+                    Style::default().fg(OVERLAY_TEXT),
+                ));
+            } else {
+                label_spans.push(Span::raw(" ".repeat(slot_width)));
+            }
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(label_spans)),
+            Rect::new(inner.x, label_y, inner.width, 1),
+        );
+    }
+}
+
+fn gradient_color(gradient: &[Color], t: f64) -> Color {
+    if gradient.is_empty() {
+        return TEXT;
+    }
+    if gradient.len() == 1 {
+        return gradient[0];
+    }
+
+    let t = t.clamp(0.0, 1.0);
+    let segment = t * (gradient.len() - 1) as f64;
+    let i = (segment as usize).min(gradient.len() - 2);
+    let frac = segment - i as f64;
+
+    let (r1, g1, b1) = extract_rgb(gradient[i]);
+    let (r2, g2, b2) = extract_rgb(gradient[i + 1]);
+
+    Color::Rgb(
+        lerp_u8(r1, r2, frac),
+        lerp_u8(g1, g2, frac),
+        lerp_u8(b1, b2, frac),
+    )
+}
+
+fn extract_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (128, 128, 128),
+    }
+}
+
+fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t).round() as u8
+}
+
 // ── Loading state ───────────────────────────────────────────────────
 
 fn draw_loading(frame: &mut Frame, area: Rect, tick: u64) {
@@ -466,7 +778,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         help_line("  ↑ / ↓     ", "Navigate rows"),
         help_line("  Enter     ", "Open PR in browser"),
         help_line("  Tab       ", "Switch view"),
-        help_line("  1 / 2     ", "Jump to view"),
+        help_line("  1 / 2 / 3 ", "Jump to view"),
         help_line("  r         ", "Refresh data"),
         help_line("  s         ", "Toggle sort order"),
         help_line("  q / Esc   ", "Quit"),

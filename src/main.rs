@@ -39,6 +39,10 @@ enum DataMsg {
         index: usize,
         is_direct: bool,
     },
+    StatsData {
+        merged: types::WeeklyStats,
+        reviewed: types::WeeklyStats,
+    },
     UpdateAvailable(String),
     Error(String),
 }
@@ -85,8 +89,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
     let mut app = App::new();
     let (tx, mut rx) = mpsc::channel::<DataMsg>(64);
 
-    // Kick off initial fetch + version check
+    // Kick off initial fetch + version check + stats
     spawn_data_fetch(tx.clone());
+    spawn_stats_fetch(tx.clone());
     spawn_update_check(tx.clone());
 
     loop {
@@ -126,6 +131,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         rr.is_direct = is_direct;
                     }
                 }
+                DataMsg::StatsData { merged, reviewed } => {
+                    app.merged_stats = Some(merged);
+                    app.reviewed_stats = Some(reviewed);
+                }
                 DataMsg::UpdateAvailable(version) => {
                     app.update_available = Some(version);
                 }
@@ -140,7 +149,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
         if app.needs_refresh {
             app.needs_refresh = false;
             spawn_data_fetch(tx.clone());
+            spawn_stats_fetch(tx.clone());
         }
+
 
         // Poll for keyboard events with a short timeout so we can process data messages
         if event::poll(std::time::Duration::from_millis(50))? {
@@ -275,6 +286,23 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
         for h in handles {
             let _ = h.await;
         }
+    });
+}
+
+fn spawn_stats_fetch(tx: mpsc::Sender<DataMsg>) {
+    tokio::spawn(async move {
+        let client = match GitHubClient::new() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+
+        let (merged, reviewed) = tokio::join!(
+            client.fetch_merged_prs_stats(12),
+            client.fetch_reviewed_prs_stats(12),
+        );
+        let _ = tx
+            .send(DataMsg::StatsData { merged, reviewed })
+            .await;
     });
 }
 

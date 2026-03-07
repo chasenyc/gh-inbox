@@ -14,6 +14,10 @@ A terminal dashboard for your GitHub pull requests. See everything at a glance �
 - Stale PR indicator (no activity in 7+ days)
 - Draft PR support
 
+**Stats** — Your throughput at a glance:
+- PRs merged per week (last 12 weeks)
+- PRs reviewed per week (last 12 weeks)
+
 **Review Requests** — PRs where your review has been requested, with:
 - Direct vs team request indicator
 - Author and request age
@@ -77,7 +81,7 @@ gh-inbox
 | `↑` / `↓` | Navigate rows |
 | `Enter` | Open PR in browser |
 | `Tab` | Switch between My PRs and Reviews |
-| `1` / `2` | Jump to a specific tab |
+| `1` / `2` / `3` | Jump to a specific tab |
 | `s` | Toggle sort order (newest/oldest) |
 | `r` | Refresh data |
 | `?` | Help |

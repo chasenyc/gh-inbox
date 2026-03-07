@@ -66,6 +66,103 @@ impl ReviewRequest {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WeeklyStats {
+    pub weeks: Vec<WeekBucket>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WeekBucket {
+    pub week_start: DateTime<Utc>,
+    pub count: u64,
+}
+
+impl WeeklyStats {
+    /// Build weekly buckets from a list of dates, covering the last `num_weeks` weeks.
+    pub fn from_dates(dates: &[DateTime<Utc>], num_weeks: usize) -> Self {
+        use chrono::{Datelike, Duration, TimeZone};
+
+        let now = Utc::now();
+        // Start of current week (Monday)
+        let today = now.date_naive();
+        let days_since_monday = today.weekday().num_days_from_monday();
+        let current_monday = today - Duration::days(days_since_monday as i64);
+        let earliest_monday = current_monday - Duration::weeks(num_weeks as i64 - 1);
+
+        let mut weeks: Vec<WeekBucket> = (0..num_weeks)
+            .map(|i| {
+                let week_start = Utc
+                    .from_utc_datetime(&(earliest_monday + Duration::weeks(i as i64)).and_hms_opt(0, 0, 0).unwrap());
+                WeekBucket {
+                    week_start,
+                    count: 0,
+                }
+            })
+            .collect();
+
+        for date in dates {
+            let d = date.date_naive();
+            let days_from_earliest = (d - earliest_monday).num_days();
+            if days_from_earliest < 0 {
+                continue;
+            }
+            let week_index = (days_from_earliest / 7) as usize;
+            if week_index < weeks.len() {
+                weeks[week_index].count += 1;
+            }
+        }
+
+        WeeklyStats { weeks }
+    }
+
+    pub fn label(&self, index: usize) -> String {
+        if let Some(bucket) = self.weeks.get(index) {
+            bucket.week_start.format("%m/%d").to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.weeks.iter().map(|w| w.count).sum()
+    }
+
+    pub fn max(&self) -> u64 {
+        self.weeks.iter().map(|w| w.count).max().unwrap_or(0)
+    }
+
+    pub fn avg_per_week(&self) -> f64 {
+        if self.weeks.is_empty() {
+            0.0
+        } else {
+            self.total() as f64 / self.weeks.len() as f64
+        }
+    }
+
+    pub fn current_week(&self) -> u64 {
+        self.weeks.last().map(|w| w.count).unwrap_or(0)
+    }
+
+    pub fn trend(&self) -> &'static str {
+        // Compare last 4 weeks avg vs prior 4 weeks avg
+        let len = self.weeks.len();
+        if len < 8 {
+            return "—";
+        }
+        let recent: f64 = self.weeks[len - 4..].iter().map(|w| w.count as f64).sum::<f64>() / 4.0;
+        let prior: f64 = self.weeks[len - 8..len - 4].iter().map(|w| w.count as f64).sum::<f64>() / 4.0;
+        if prior == 0.0 && recent > 0.0 {
+            "up"
+        } else if recent > prior * 1.1 {
+            "up"
+        } else if recent < prior * 0.9 {
+            "down"
+        } else {
+            "stable"
+        }
+    }
+}
+
 fn format_relative_time(dt: DateTime<Utc>) -> String {
     let duration = Utc::now() - dt;
     let minutes = duration.num_minutes();

@@ -5,7 +5,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::process::Command;
 
-use crate::types::{CiStatus, MergeStatus, PullRequest, ReviewRequest, ReviewStatus};
+use crate::types::{CiStatus, MergeStatus, PullRequest, ReviewRequest, ReviewStatus, WeeklyStats};
 
 const GITHUB_API: &str = "https://api.github.com";
 
@@ -357,6 +357,82 @@ impl GitHubClient {
             .requested_reviewers
             .iter()
             .any(|u| u.login.eq_ignore_ascii_case(&self.username))
+    }
+
+    pub async fn fetch_merged_prs_stats(&self, num_weeks: usize) -> WeeklyStats {
+        let since = chrono::Utc::now() - chrono::Duration::weeks(num_weeks as i64);
+        let since_str = since.format("%Y-%m-%d").to_string();
+        let query = format!(
+            "author:{} type:pr is:merged merged:>{}",
+            self.username, since_str
+        );
+
+        let dates = self.fetch_search_dates(&query, "closed_at").await;
+        WeeklyStats::from_dates(&dates, num_weeks)
+    }
+
+    pub async fn fetch_reviewed_prs_stats(&self, num_weeks: usize) -> WeeklyStats {
+        let since = chrono::Utc::now() - chrono::Duration::weeks(num_weeks as i64);
+        let since_str = since.format("%Y-%m-%d").to_string();
+        let query = format!(
+            "reviewed-by:{} type:pr is:merged -author:{} merged:>{}",
+            self.username, self.username, since_str
+        );
+
+        let dates = self.fetch_search_dates(&query, "closed_at").await;
+        WeeklyStats::from_dates(&dates, num_weeks)
+    }
+
+    async fn fetch_search_dates(&self, query: &str, date_field: &str) -> Vec<DateTime<Utc>> {
+        let mut all_dates = Vec::new();
+        let mut page = 1u32;
+
+        loop {
+            let url = format!(
+                "{}/search/issues?q={}&per_page=100&page={}",
+                GITHUB_API,
+                urlencoded(query),
+                page
+            );
+
+            let resp: serde_json::Value = match self
+                .auth_get(&url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status().map_err(Into::into))
+            {
+                Ok(resp) => match resp.json().await {
+                    Ok(v) => v,
+                    Err(_) => break,
+                },
+                Err(_) => break,
+            };
+
+            let items = match resp.get("items").and_then(|v| v.as_array()) {
+                Some(items) => items,
+                None => break,
+            };
+
+            if items.is_empty() {
+                break;
+            }
+
+            for item in items {
+                if let Some(date_str) = item.get(date_field).and_then(|v| v.as_str()) {
+                    if let Ok(dt) = date_str.parse::<DateTime<Utc>>() {
+                        all_dates.push(dt);
+                    }
+                }
+            }
+
+            let total = resp.get("total_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            if (page as u64) * 100 >= total || page >= 10 {
+                break;
+            }
+            page += 1;
+        }
+
+        all_dates
     }
 }
 
