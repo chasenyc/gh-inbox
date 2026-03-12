@@ -119,7 +119,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                 } => {
                     app.my_prs = my_prs;
                     app.review_requests = review_requests;
-                    app.sort_lists();
+                    // Don't re-sort here — the lists arrive pre-sorted from
+                    // the API (newest-first) and background enrichment tasks
+                    // reference items by their original indices.
+                    app.sort_newest_first = true;
                     app.state = app::AppState::Ready;
                     app.clamp_indices();
                 }
