@@ -36,9 +36,17 @@ enum DataMsg {
         index: usize,
         status: types::MergeStatus,
     },
+    ReviewCiUpdate {
+        index: usize,
+        status: types::CiStatus,
+    },
     DirectRequestUpdate {
         index: usize,
         is_direct: bool,
+    },
+    ReviewMergeStatusUpdate {
+        index: usize,
+        status: types::MergeStatus,
     },
     StatsData {
         merged: types::WeeklyStats,
@@ -130,9 +138,19 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         pr.merge_status = status;
                     }
                 }
+                DataMsg::ReviewCiUpdate { index, status } => {
+                    if let Some(rr) = app.review_requests.get_mut(index) {
+                        rr.ci_status = status;
+                    }
+                }
                 DataMsg::DirectRequestUpdate { index, is_direct } => {
                     if let Some(rr) = app.review_requests.get_mut(index) {
                         rr.is_direct = is_direct;
+                    }
+                }
+                DataMsg::ReviewMergeStatusUpdate { index, status } => {
+                    if let Some(rr) = app.review_requests.get_mut(index) {
+                        rr.merge_status = status;
                     }
                 }
                 DataMsg::StatsData { merged, reviewed } => {
@@ -275,7 +293,7 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
             }));
         }
 
-        // Review request direct/team detection
+        // Review request direct/team detection + CI status
         for i in 0..rr_count {
             let client = Arc::clone(&client);
             let tx = tx.clone();
@@ -285,9 +303,18 @@ fn spawn_data_fetch(tx: mpsc::Sender<DataMsg>) {
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await;
 
-                let is_direct = client.fetch_is_direct_request(&repo, &url).await;
+                let ((is_direct, merge), ci) = tokio::join!(
+                    client.fetch_is_direct_request(&repo, &url),
+                    client.fetch_ci_status(&repo, &url),
+                );
                 let _ = tx
                     .send(DataMsg::DirectRequestUpdate { index: i, is_direct })
+                    .await;
+                let _ = tx
+                    .send(DataMsg::ReviewCiUpdate { index: i, status: ci })
+                    .await;
+                let _ = tx
+                    .send(DataMsg::ReviewMergeStatusUpdate { index: i, status: merge })
                     .await;
             }));
         }

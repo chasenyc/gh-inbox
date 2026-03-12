@@ -167,6 +167,8 @@ impl GitHubClient {
                     author,
                     requested_at: item.created_at,
                     is_direct: false,
+                    ci_status: CiStatus::None,
+                    merge_status: MergeStatus::Unknown,
                 }
             })
             .collect();
@@ -333,10 +335,10 @@ impl GitHubClient {
         (review_status, merge_status)
     }
 
-    pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> bool {
+    pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> (bool, MergeStatus) {
         let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
             Some(n) => n,
-            None => return false,
+            None => return (false, MergeStatus::Unknown),
         };
 
         let detail_url = format!("{}/repos/{}/pulls/{}", GITHUB_API, repo, number);
@@ -348,15 +350,26 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(d) => d,
-                Err(_) => return false,
+                Err(_) => return (false, MergeStatus::Unknown),
             },
-            Err(_) => return false,
+            Err(_) => return (false, MergeStatus::Unknown),
         };
 
-        detail
+        let is_direct = detail
             .requested_reviewers
             .iter()
-            .any(|u| u.login.eq_ignore_ascii_case(&self.username))
+            .any(|u| u.login.eq_ignore_ascii_case(&self.username));
+
+        let merge_status = match detail.mergeable_state.as_deref() {
+            Some("clean") => MergeStatus::Ready,
+            Some("blocked") => MergeStatus::Blocked,
+            Some("dirty") => MergeStatus::Conflicts,
+            Some("behind") => MergeStatus::Behind,
+            Some("unstable") => MergeStatus::Unstable,
+            _ => MergeStatus::Unknown,
+        };
+
+        (is_direct, merge_status)
     }
 
     pub async fn fetch_merged_prs_stats(&self, num_weeks: usize) -> WeeklyStats {

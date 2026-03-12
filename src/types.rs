@@ -58,6 +58,8 @@ pub struct ReviewRequest {
     pub author: String,
     pub requested_at: DateTime<Utc>,
     pub is_direct: bool,
+    pub ci_status: CiStatus,
+    pub merge_status: MergeStatus,
 }
 
 impl ReviewRequest {

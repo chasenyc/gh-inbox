@@ -345,6 +345,8 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let header = Row::new(vec![
         Cell::from("   REPO"),
         Cell::from("TITLE"),
+        Cell::from("CI"),
+        Cell::from("MERGE"),
         Cell::from("AUTHOR"),
         Cell::from("REQUESTED"),
         Cell::from(""),
@@ -380,6 +382,22 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled(rr.repo.clone(), repo_style),
             ]));
 
+            let (ci_sym, ci_color) = match rr.ci_status {
+                CiStatus::Passing => ("✓", GREEN),
+                CiStatus::Failing => ("✗", RED),
+                CiStatus::Pending => ("◌", YELLOW),
+                CiStatus::None => ("·", OVERLAY_TEXT),
+            };
+
+            let (merge_sym, merge_color) = match rr.merge_status {
+                MergeStatus::Ready => ("✓", GREEN),
+                MergeStatus::Blocked => ("⊘", RED),
+                MergeStatus::Conflicts => ("⚡", RED),
+                MergeStatus::Behind => ("⇣", YELLOW),
+                MergeStatus::Unstable => ("⚠", YELLOW),
+                MergeStatus::Unknown => ("…", OVERLAY_TEXT),
+            };
+
             let direct_cell = if rr.is_direct {
                 Cell::from(Span::styled("●", Style::default().fg(LAVENDER)))
             } else {
@@ -389,6 +407,8 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
             Row::new(vec![
                 repo_cell,
                 Cell::from(rr.title.clone()).style(title_style),
+                Cell::from(ci_sym).style(Style::default().fg(ci_color)),
+                Cell::from(merge_sym).style(Style::default().fg(merge_color)),
                 Cell::from(rr.author.clone()).style(Style::default().fg(SUBTEXT)),
                 Cell::from(rr.age_string()).style(Style::default().fg(SUBTEXT)),
                 direct_cell,
@@ -399,6 +419,8 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
     let widths = vec![
         Constraint::Length(24),
         Constraint::Min(20),
+        Constraint::Length(4),
+        Constraint::Length(7),
         Constraint::Length(18),
         Constraint::Length(12),
         Constraint::Length(3),
