@@ -100,7 +100,7 @@ impl GitHubClient {
 
     pub async fn fetch_my_prs(&self) -> Result<Vec<PullRequest>> {
         let query = format!(
-            "author:{} type:pr state:open sort:updated-desc",
+            "author:{} type:pr state:open archived:false sort:updated-desc",
             self.username
         );
         let url = format!("{}/search/issues?q={}&per_page=100", GITHUB_API, urlencoded(&query));
@@ -138,7 +138,7 @@ impl GitHubClient {
 
     pub async fn fetch_review_requests(&self) -> Result<Vec<ReviewRequest>> {
         let query = format!(
-            "review-requested:{} type:pr state:open sort:updated-desc",
+            "review-requested:{} type:pr state:open archived:false sort:updated-desc",
             self.username
         );
         let url = format!("{}/search/issues?q={}&per_page=100", GITHUB_API, urlencoded(&query));
@@ -376,7 +376,7 @@ impl GitHubClient {
         let since = chrono::Utc::now() - chrono::Duration::weeks(num_weeks as i64);
         let since_str = since.format("%Y-%m-%d").to_string();
         let query = format!(
-            "author:{} type:pr is:merged merged:>{}",
+            "author:{} type:pr is:merged archived:false merged:>{}",
             self.username, since_str
         );
 
@@ -388,7 +388,7 @@ impl GitHubClient {
         let since = chrono::Utc::now() - chrono::Duration::weeks(num_weeks as i64);
         let since_str = since.format("%Y-%m-%d").to_string();
         let query = format!(
-            "reviewed-by:{} type:pr is:merged -author:{} merged:>{}",
+            "reviewed-by:{} type:pr is:merged archived:false -author:{} merged:>{}",
             self.username, self.username, since_str
         );
 
