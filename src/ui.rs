@@ -366,14 +366,30 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
             let (accent, repo_style, title_style) = if selected {
                 (
                     Span::styled(" ▎ ", Style::default().fg(BLUE)),
-                    Style::default().fg(rc).bold(),
-                    Style::default().fg(TEXT).bold(),
+                    if rr.is_draft {
+                        Style::default().fg(OVERLAY_TEXT).italic()
+                    } else {
+                        Style::default().fg(rc).bold()
+                    },
+                    if rr.is_draft {
+                        Style::default().fg(OVERLAY_TEXT).italic()
+                    } else {
+                        Style::default().fg(TEXT).bold()
+                    },
                 )
             } else {
                 (
                     Span::styled("   ", Style::default()),
-                    Style::default().fg(rc),
-                    Style::default().fg(TEXT),
+                    if rr.is_draft {
+                        Style::default().fg(OVERLAY_TEXT).italic()
+                    } else {
+                        Style::default().fg(rc)
+                    },
+                    if rr.is_draft {
+                        Style::default().fg(OVERLAY_TEXT).italic()
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
                 )
             };
 

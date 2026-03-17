@@ -167,6 +167,7 @@ impl GitHubClient {
                     author,
                     requested_at: item.created_at,
                     is_direct: false,
+                    is_draft: item.draft.unwrap_or(false),
                     ci_status: CiStatus::None,
                     merge_status: MergeStatus::Unknown,
                 }
