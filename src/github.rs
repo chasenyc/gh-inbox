@@ -5,7 +5,10 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::process::Command;
 
-use crate::types::{CiStatus, MergeStatus, PullRequest, ReviewRequest, ReviewStatus, WeeklyStats};
+use crate::types::{
+    CiStatus, MergeStatus, Notification, NotificationReason, Priority, PullRequest, ReviewRequest,
+    ReviewStatus, WeeklyStats,
+};
 
 const GITHUB_API: &str = "https://api.github.com";
 
@@ -13,6 +16,7 @@ pub struct GitHubClient {
     client: Client,
     token: String,
     username: String,
+    pub has_notifications_scope: bool,
 }
 
 // --- API response types ---
@@ -75,23 +79,94 @@ struct CommitRef {
     sha: String,
 }
 
+#[derive(Deserialize)]
+struct UserResponse {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct NotificationApiResponse {
+    id: String,
+    reason: String,
+    subject: NotificationSubject,
+    repository: NotificationRepo,
+    unread: bool,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct NotificationSubject {
+    title: String,
+    url: Option<String>,
+    #[serde(rename = "type")]
+    subject_type: String,
+}
+
+#[derive(Deserialize)]
+struct NotificationRepo {
+    full_name: String,
+}
+
 // --- Implementation ---
 
 impl GitHubClient {
-    pub fn new() -> Result<Self> {
+    /// Create a new client. Makes a single GET /user call to fetch username
+    /// and check OAuth scopes (replacing the previous two CLI calls).
+    pub async fn new() -> Result<Self> {
         let token = get_gh_token()?;
-        let username = get_gh_username(&token)?;
         let client = Client::new();
+
+        let resp = client
+            .get(format!("{}/user", GITHUB_API))
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, "gh-inbox")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .context("Failed to connect to GitHub API")?
+            .error_for_status()
+            .map_err(|e| anyhow::anyhow!("GitHub authentication failed. Run `gh auth login` first.\n{}", e))?;
+
+        // Check notifications scope from response header
+        let has_notifications_scope = resp
+            .headers()
+            .get("x-oauth-scopes")
+            .and_then(|v| v.to_str().ok())
+            .map(|scopes| scopes.split(',').any(|s| s.trim() == "notifications"))
+            .unwrap_or(false);
+
+        let user: UserResponse = resp.json().await.context("Failed to parse user response")?;
+
         Ok(Self {
             client,
             token,
-            username,
+            username: user.login,
+            has_notifications_scope,
         })
     }
 
     fn auth_get(&self, url: &str) -> reqwest::RequestBuilder {
         self.client
             .get(url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, "gh-inbox")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    fn auth_patch(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client
+            .patch(url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, "gh-inbox")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    fn auth_put(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client
+            .put(url)
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header(ACCEPT, "application/vnd.github+json")
             .header(USER_AGENT, "gh-inbox")
@@ -128,6 +203,8 @@ impl GitHubClient {
                     updated_at: item.updated_at,
                     created_at: item.created_at,
                     is_draft: item.draft.unwrap_or(false),
+                    priority: Priority::Low,
+                    priority_score: 0,
                 }
             })
             .collect();
@@ -170,11 +247,91 @@ impl GitHubClient {
                     is_draft: item.draft.unwrap_or(false),
                     ci_status: CiStatus::None,
                     merge_status: MergeStatus::Unknown,
+                    priority: Priority::Low,
+                    priority_score: 0,
                 }
             })
             .collect();
 
         Ok(requests)
+    }
+
+    /// Fetch GitHub notifications. Returns Ok(None) on 304 Not Modified.
+    pub async fn fetch_notifications(
+        &self,
+        participating: bool,
+        last_modified: Option<&str>,
+    ) -> Result<Option<(Vec<Notification>, Option<String>)>> {
+        let url = format!(
+            "{}/notifications?participating={}&per_page=50",
+            GITHUB_API, participating
+        );
+
+        let mut req = self.auth_get(&url);
+        if let Some(lm) = last_modified {
+            req = req.header("If-Modified-Since", lm);
+        }
+
+        let resp = req.send().await?.error_for_status()?;
+
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(None);
+        }
+
+        let new_last_modified = resp
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let items: Vec<NotificationApiResponse> = resp.json().await?;
+
+        let notifications = items
+            .into_iter()
+            .map(|item| {
+                let reason = NotificationReason::from_api_string(&item.reason);
+                let subject_url = item
+                    .subject
+                    .url
+                    .map(|u| notification_html_url(&u, &item.subject.subject_type))
+                    .unwrap_or_default();
+
+                Notification {
+                    id: item.id,
+                    reason,
+                    subject_title: item.subject.title,
+                    subject_url,
+                    repo: item.repository.full_name,
+                    updated_at: item.updated_at,
+                    unread: item.unread,
+                    pending_read: false,
+                    priority: Priority::Low,
+                    priority_score: 0,
+                }
+            })
+            .collect();
+
+        Ok(Some((notifications, new_last_modified)))
+    }
+
+    pub async fn mark_notification_read(&self, thread_id: &str) -> Result<()> {
+        let url = format!("{}/notifications/threads/{}", GITHUB_API, thread_id);
+        self.auth_patch(&url)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn mark_all_notifications_read(&self) -> Result<()> {
+        let url = format!("{}/notifications", GITHUB_API);
+        let now = Utc::now().to_rfc3339();
+        self.auth_put(&url)
+            .json(&serde_json::json!({ "last_read_at": now }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     pub async fn fetch_ci_status(&self, repo: &str, pr_url: &str) -> CiStatus {
@@ -511,20 +668,6 @@ fn get_gh_token() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn get_gh_username(token: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args(["api", "user", "--jq", ".login"])
-        .env("GH_TOKEN", token)
-        .output()
-        .context("Failed to get GitHub username")?;
-
-    if !output.status.success() {
-        bail!("Failed to get GitHub username from `gh api user`");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 fn extract_repo(repository_url: &Option<String>) -> String {
     repository_url
         .as_deref()
@@ -543,4 +686,13 @@ fn extract_repo(repository_url: &Option<String>) -> String {
 fn urlencoded(s: &str) -> String {
     s.replace(' ', "+")
         .replace(':', "%3A")
+}
+
+/// Convert a GitHub API URL to a web URL for opening in browser.
+fn notification_html_url(api_url: &str, subject_type: &str) -> String {
+    let html = api_url.replace("api.github.com/repos", "github.com");
+    match subject_type {
+        "PullRequest" => html.replace("/pulls/", "/pull/"),
+        _ => html,
+    }
 }
