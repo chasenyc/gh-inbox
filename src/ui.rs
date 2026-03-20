@@ -6,8 +6,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table},
 };
 
-use crate::app::{App, AppState, Tab};
-use crate::types::{CiStatus, MergeStatus, ReviewStatus};
+use crate::app::{App, AppState, InboxFilter, SortOrder, Tab};
+use crate::types::{CiStatus, MergeStatus, NotificationReason, Priority};
 
 // ── Color Palette (Catppuccin Mocha-inspired) ───────────────────────
 
@@ -43,9 +43,85 @@ const REPO_COLORS: &[Color] = &[
 ];
 
 fn repo_color(repo: &str) -> Color {
-    // Simple djb2-style hash — deterministic, no storage needed
     let hash = repo.bytes().fold(5381u64, |h, b| h.wrapping_mul(33).wrapping_add(b as u64));
     REPO_COLORS[(hash % REPO_COLORS.len() as u64) as usize]
+}
+
+// ── Shared helpers (extracted per issue 4A) ─────────────────────────
+
+fn ci_symbol(status: &CiStatus) -> (&'static str, Color) {
+    match status {
+        CiStatus::Passing => ("✓", GREEN),
+        CiStatus::Failing => ("✗", RED),
+        CiStatus::Pending => ("◌", YELLOW),
+        CiStatus::None => ("·", OVERLAY_TEXT),
+    }
+}
+
+fn merge_symbol(status: &MergeStatus) -> (&'static str, Color) {
+    match status {
+        MergeStatus::Ready => ("✓", GREEN),
+        MergeStatus::Blocked => ("⊘", RED),
+        MergeStatus::Conflicts => ("⚡", RED),
+        MergeStatus::Behind => ("⇣", YELLOW),
+        MergeStatus::Unstable => ("⚠", YELLOW),
+        MergeStatus::Unknown => ("…", OVERLAY_TEXT),
+    }
+}
+
+fn priority_symbol(priority: &Priority) -> (&'static str, Color) {
+    match priority {
+        Priority::Critical => ("!!", RED),
+        Priority::High => ("! ", YELLOW),
+        Priority::Medium => ("· ", OVERLAY_TEXT),
+        Priority::Low => ("  ", OVERLAY_TEXT),
+    }
+}
+
+fn reason_icon(reason: &NotificationReason) -> (&'static str, Color) {
+    match reason {
+        NotificationReason::Mention => ("@", PEACH),
+        NotificationReason::ReviewRequested => ("?", LAVENDER),
+        NotificationReason::CiActivity => ("~", YELLOW),
+        NotificationReason::Comment => (">", SUBTEXT),
+        NotificationReason::Assign => ("=", BLUE),
+        NotificationReason::StateChange => ("∆", GREEN),
+        NotificationReason::Other => ("·", OVERLAY_TEXT),
+    }
+}
+
+/// Returns (accent_span, repo_style, title_style) for a table row.
+fn row_styles(repo: &str, is_draft: bool, selected: bool) -> (Span<'static>, Style, Style) {
+    let rc = repo_color(repo);
+    if selected {
+        (
+            Span::styled(" ▎ ", Style::default().fg(BLUE)),
+            if is_draft {
+                Style::default().fg(OVERLAY_TEXT).italic()
+            } else {
+                Style::default().fg(rc).bold()
+            },
+            if is_draft {
+                Style::default().fg(OVERLAY_TEXT).italic()
+            } else {
+                Style::default().fg(TEXT).bold()
+            },
+        )
+    } else {
+        (
+            Span::styled("   ", Style::default()),
+            if is_draft {
+                Style::default().fg(OVERLAY_TEXT).italic()
+            } else {
+                Style::default().fg(rc)
+            },
+            if is_draft {
+                Style::default().fg(OVERLAY_TEXT).italic()
+            } else {
+                Style::default().fg(TEXT)
+            },
+        )
+    }
 }
 
 // ── Main draw ───────────────────────────────────────────────────────
@@ -53,14 +129,12 @@ fn repo_color(repo: &str) -> Color {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-
-    // Outer border wrapping the entire app
     let title = Line::from(vec![
         Span::styled(" ◆ ", Style::default().fg(BLUE)),
         Span::styled("gh-inbox ", Style::default().fg(LAVENDER).bold()),
     ]);
 
-    let footer = footer_hints();
+    let footer = footer_hints(app);
 
     let mut outer_block = Block::default()
         .borders(Borders::ALL)
@@ -83,9 +157,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let inner = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
-    // Inner layout: tabs + content
     let chunks = Layout::vertical([
-        Constraint::Length(2), // tab bar (line + spacing)
+        Constraint::Length(2), // tab bar
         Constraint::Min(3),   // content area
     ])
     .split(inner);
@@ -100,6 +173,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppState::Error => draw_error(frame, content_area, &app.error_message),
         AppState::Ready | AppState::Help => {
             draw_content(frame, content_area, app);
+            // Status bar error (for mark-as-read failures etc.)
+            if let Some(ref err) = app.status_error {
+                let err_line = Line::from(Span::styled(
+                    format!(" {} ", err),
+                    Style::default().fg(RED).bold(),
+                ));
+                let err_area = Rect {
+                    y: content_area.y + content_area.height.saturating_sub(1),
+                    height: 1,
+                    ..content_area
+                };
+                frame.render_widget(Paragraph::new(err_line), err_area);
+            }
             if app.state == AppState::Help {
                 draw_help_overlay(frame, area);
             }
@@ -107,10 +193,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-// ── Footer keybinding hints (rendered inside bottom border) ─────────
+// ── Footer keybinding hints ─────────────────────────────────────────
 
-fn footer_hints() -> Line<'static> {
-    Line::from(vec![
+fn footer_hints(app: &App) -> Line<'static> {
+    let sort_label = match app.sort_order {
+        SortOrder::NewestFirst => "sort:new",
+        SortOrder::OldestFirst => "sort:old",
+        SortOrder::PriorityFirst => "sort:pri",
+    };
+
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled("↑↓", Style::default().fg(SUBTEXT).bold()),
         Span::styled(" navigate ", Style::default().fg(OVERLAY_TEXT)),
@@ -121,17 +213,32 @@ fn footer_hints() -> Line<'static> {
         Span::styled("r", Style::default().fg(SUBTEXT).bold()),
         Span::styled(" refresh ", Style::default().fg(OVERLAY_TEXT)),
         Span::styled("s", Style::default().fg(SUBTEXT).bold()),
-        Span::styled(" sort ", Style::default().fg(OVERLAY_TEXT)),
-        Span::styled("?", Style::default().fg(SUBTEXT).bold()),
-        Span::styled(" help ", Style::default().fg(OVERLAY_TEXT)),
-        Span::styled("q", Style::default().fg(SUBTEXT).bold()),
-        Span::styled(" quit ", Style::default().fg(OVERLAY_TEXT)),
-    ])
+        Span::styled(format!(" {} ", sort_label), Style::default().fg(OVERLAY_TEXT)),
+    ];
+
+    if app.tab == Tab::Inbox {
+        spans.push(Span::styled("d", Style::default().fg(SUBTEXT).bold()));
+        spans.push(Span::styled(" read ", Style::default().fg(OVERLAY_TEXT)));
+        spans.push(Span::styled("f", Style::default().fg(SUBTEXT).bold()));
+        spans.push(Span::styled(" filter ", Style::default().fg(OVERLAY_TEXT)));
+    }
+
+    spans.push(Span::styled("?", Style::default().fg(SUBTEXT).bold()));
+    spans.push(Span::styled(" help ", Style::default().fg(OVERLAY_TEXT)));
+    spans.push(Span::styled("q", Style::default().fg(SUBTEXT).bold()));
+    spans.push(Span::styled(" quit ", Style::default().fg(OVERLAY_TEXT)));
+
+    Line::from(spans)
 }
 
 // ── Tab bar ─────────────────────────────────────────────────────────
 
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
+    let inbox_count = app.filtered_notification_indices().len();
+    let inbox_label = format!("Inbox{}", app.inbox_filter.label());
+
+    let (inbox_dot, inbox_label_span, inbox_count_s) =
+        tab_spans(&inbox_label, Some(inbox_count), app.tab == Tab::Inbox);
     let (my_dot, my_label, my_count_s) =
         tab_spans("My PRs", Some(app.my_prs.len()), app.tab == Tab::MyPrs);
     let (rev_dot, rev_label, rev_count_s) =
@@ -141,14 +248,18 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
 
     let line = Line::from(vec![
         Span::raw(" "),
+        inbox_dot,
+        inbox_label_span,
+        inbox_count_s,
+        Span::raw("     "),
         my_dot,
         my_label,
         my_count_s,
-        Span::raw("       "),
+        Span::raw("     "),
         rev_dot,
         rev_label,
         rev_count_s,
-        Span::raw("       "),
+        Span::raw("     "),
         stats_dot,
         stats_label,
         stats_count_s,
@@ -157,7 +268,8 @@ fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn tab_spans<'a>(label: &'a str, count: Option<usize>, active: bool) -> (Span<'a>, Span<'a>, Span<'a>) {
+fn tab_spans(label: &str, count: Option<usize>, active: bool) -> (Span<'static>, Span<'static>, Span<'static>) {
+    let label_owned = label.to_string();
     let count_str = match count {
         Some(c) => format!("  {}", c),
         None => String::new(),
@@ -165,13 +277,13 @@ fn tab_spans<'a>(label: &'a str, count: Option<usize>, active: bool) -> (Span<'a
     if active {
         (
             Span::styled("● ", Style::default().fg(BLUE)),
-            Span::styled(label, Style::default().fg(TEXT).bold()),
+            Span::styled(label_owned, Style::default().fg(TEXT).bold()),
             Span::styled(count_str, Style::default().fg(BLUE)),
         )
     } else {
         (
             Span::styled("○ ", Style::default().fg(OVERLAY_TEXT)),
-            Span::styled(label, Style::default().fg(OVERLAY_TEXT)),
+            Span::styled(label_owned, Style::default().fg(OVERLAY_TEXT)),
             Span::styled(count_str, Style::default().fg(OVERLAY_TEXT)),
         )
     }
@@ -181,10 +293,111 @@ fn tab_spans<'a>(label: &'a str, count: Option<usize>, active: bool) -> (Span<'a
 
 fn draw_content(frame: &mut Frame, area: Rect, app: &mut App) {
     match app.tab {
+        Tab::Inbox => draw_inbox(frame, area, app),
         Tab::MyPrs => draw_my_prs_table(frame, area, app),
         Tab::ReviewRequests => draw_reviews_table(frame, area, app),
         Tab::Stats => draw_stats(frame, area, app),
     }
+}
+
+// ── Inbox (notifications) table ─────────────────────────────────────
+
+fn draw_inbox(frame: &mut Frame, area: Rect, app: &mut App) {
+    if app.notification_scope_missing {
+        let lines = vec![
+            Line::from(Span::styled(
+                "Notifications require additional permissions.",
+                Style::default().fg(YELLOW),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Run: gh auth refresh -s notifications",
+                Style::default().fg(TEXT).bold(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Then press r to refresh.",
+                Style::default().fg(OVERLAY_TEXT),
+            )),
+        ];
+        let centered = vertical_center(area, 5);
+        frame.render_widget(
+            Paragraph::new(lines).alignment(Alignment::Center),
+            centered,
+        );
+        return;
+    }
+
+    let filtered_indices = app.filtered_notification_indices();
+
+    if filtered_indices.is_empty() {
+        let msg = if app.inbox_filter != InboxFilter::All {
+            "No notifications match this filter"
+        } else {
+            "All caught up!"
+        };
+        draw_centered_message(frame, area, msg, OVERLAY_TEXT);
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("P"),
+        Cell::from(" "),
+        Cell::from("   REPO"),
+        Cell::from("TITLE"),
+        Cell::from("AGE"),
+    ])
+    .style(Style::default().fg(OVERLAY_TEXT).bold())
+    .height(1)
+    .bottom_margin(1);
+
+    let selected = app.inbox_table_state.selected().unwrap_or(0);
+
+    let rows: Vec<Row> = filtered_indices
+        .iter()
+        .enumerate()
+        .map(|(display_i, &real_i)| {
+            let notif = &app.notifications[real_i];
+            let is_selected = display_i == selected;
+
+            let (pri_sym, pri_color) = priority_symbol(&notif.priority);
+            let (reason_sym, reason_color) = reason_icon(&notif.reason);
+            let (accent, repo_style, title_style) = row_styles(&notif.repo, false, is_selected);
+
+            let base_title_style = if notif.unread {
+                title_style.bold()
+            } else {
+                Style::default().fg(OVERLAY_TEXT)
+            };
+
+            Row::new(vec![
+                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+                Cell::from(reason_sym).style(Style::default().fg(reason_color)),
+                Cell::from(Line::from(vec![
+                    accent,
+                    Span::styled(notif.repo.clone(), repo_style),
+                ])),
+                Cell::from(notif.subject_title.clone()).style(base_title_style),
+                Cell::from(notif.age_string()).style(Style::default().fg(SUBTEXT)),
+            ])
+        })
+        .collect();
+
+    let widths = vec![
+        Constraint::Length(2),  // priority
+        Constraint::Length(2),  // reason
+        Constraint::Length(24), // repo
+        Constraint::Min(20),   // title
+        Constraint::Length(10), // age
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(Block::default().padding(Padding::horizontal(1)))
+        .row_highlight_style(Style::default().bg(SELECTED_BG))
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Never);
+
+    frame.render_stateful_widget(table, area, &mut app.inbox_table_state);
 }
 
 // ── My PRs table ────────────────────────────────────────────────────
@@ -202,6 +415,7 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
     app.snake_game = None;
 
     let header = Row::new(vec![
+        Cell::from("P"),
         Cell::from("   REPO"),
         Cell::from("TITLE"),
         Cell::from("CI"),
@@ -219,82 +433,29 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, pr)| {
             let selected = i == app.selected_index();
+            let (accent, repo_style, title_style) = row_styles(&pr.repo, pr.is_draft, selected);
+            let (ci_sym, ci_color) = ci_symbol(&pr.ci_status);
+            let (merge_sym, merge_color) = merge_symbol(&pr.merge_status);
+            let (pri_sym, pri_color) = priority_symbol(&pr.priority);
 
-            // Accent bar + repo (color derived from repo name)
-            let rc = repo_color(&pr.repo);
-            let (accent, repo_style, title_style) = if selected {
-                (
-                    Span::styled(" ▎ ", Style::default().fg(BLUE)),
-                    if pr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(rc).bold()
-                    },
-                    if pr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(TEXT).bold()
-                    },
-                )
-            } else {
-                (
-                    Span::styled("   ", Style::default()),
-                    if pr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(rc)
-                    },
-                    if pr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(TEXT)
-                    },
-                )
-            };
-
-            let repo_cell = Cell::from(Line::from(vec![
-                accent,
-                Span::styled(pr.repo.clone(), repo_style),
-            ]));
-
-            // CI status
-            let (ci_sym, ci_color) = match pr.ci_status {
-                CiStatus::Passing => ("✓", GREEN),
-                CiStatus::Failing => ("✗", RED),
-                CiStatus::Pending => ("◌", YELLOW),
-                CiStatus::None => ("·", OVERLAY_TEXT),
-            };
-
-            // Review status
             let review_cell = match pr.review_status {
-                ReviewStatus::Approved => Cell::from(Line::from(vec![
+                crate::types::ReviewStatus::Approved => Cell::from(Line::from(vec![
                     Span::styled("● ", Style::default().fg(GREEN)),
                     Span::styled("Approved", Style::default().fg(GREEN)),
                 ])),
-                ReviewStatus::ChangesRequested => Cell::from(Line::from(vec![
+                crate::types::ReviewStatus::ChangesRequested => Cell::from(Line::from(vec![
                     Span::styled("● ", Style::default().fg(PEACH)),
                     Span::styled("Changes", Style::default().fg(PEACH)),
                 ])),
-                ReviewStatus::Pending => Cell::from(Line::from(vec![
+                crate::types::ReviewStatus::Pending => Cell::from(Line::from(vec![
                     Span::styled("● ", Style::default().fg(YELLOW)),
                     Span::styled("Pending", Style::default().fg(YELLOW)),
                 ])),
-                ReviewStatus::NoReviewers => {
+                crate::types::ReviewStatus::NoReviewers => {
                     Cell::from(Span::styled("—", Style::default().fg(OVERLAY_TEXT)))
                 }
             };
 
-            // Merge status
-            let (merge_sym, merge_color) = match pr.merge_status {
-                MergeStatus::Ready => ("✓", GREEN),
-                MergeStatus::Blocked => ("⊘", RED),
-                MergeStatus::Conflicts => ("⚡", RED),
-                MergeStatus::Behind => ("⇣", YELLOW),
-                MergeStatus::Unstable => ("⚠", YELLOW),
-                MergeStatus::Unknown => ("…", OVERLAY_TEXT),
-            };
-
-            // Age + stale
             let age = pr.age_string();
             let age_cell = if pr.is_stale() {
                 Cell::from(Line::from(vec![
@@ -306,7 +467,11 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
             };
 
             Row::new(vec![
-                repo_cell,
+                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+                Cell::from(Line::from(vec![
+                    accent,
+                    Span::styled(pr.repo.clone(), repo_style),
+                ])),
                 Cell::from(pr.title.clone()).style(title_style),
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 review_cell,
@@ -317,12 +482,13 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = vec![
-        Constraint::Length(24),
-        Constraint::Min(20),
-        Constraint::Length(4),
-        Constraint::Length(12),
-        Constraint::Length(7),
-        Constraint::Length(10),
+        Constraint::Length(2),  // priority
+        Constraint::Length(24), // repo
+        Constraint::Min(20),   // title
+        Constraint::Length(4),  // ci
+        Constraint::Length(12), // review
+        Constraint::Length(7),  // merge
+        Constraint::Length(10), // age
     ];
 
     let table = Table::new(rows, widths)
@@ -343,6 +509,7 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let header = Row::new(vec![
+        Cell::from("P"),
         Cell::from("   REPO"),
         Cell::from("TITLE"),
         Cell::from("CI"),
@@ -361,58 +528,10 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .enumerate()
         .map(|(i, rr)| {
             let selected = i == app.selected_index();
-
-            let rc = repo_color(&rr.repo);
-            let (accent, repo_style, title_style) = if selected {
-                (
-                    Span::styled(" ▎ ", Style::default().fg(BLUE)),
-                    if rr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(rc).bold()
-                    },
-                    if rr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(TEXT).bold()
-                    },
-                )
-            } else {
-                (
-                    Span::styled("   ", Style::default()),
-                    if rr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(rc)
-                    },
-                    if rr.is_draft {
-                        Style::default().fg(OVERLAY_TEXT).italic()
-                    } else {
-                        Style::default().fg(TEXT)
-                    },
-                )
-            };
-
-            let repo_cell = Cell::from(Line::from(vec![
-                accent,
-                Span::styled(rr.repo.clone(), repo_style),
-            ]));
-
-            let (ci_sym, ci_color) = match rr.ci_status {
-                CiStatus::Passing => ("✓", GREEN),
-                CiStatus::Failing => ("✗", RED),
-                CiStatus::Pending => ("◌", YELLOW),
-                CiStatus::None => ("·", OVERLAY_TEXT),
-            };
-
-            let (merge_sym, merge_color) = match rr.merge_status {
-                MergeStatus::Ready => ("✓", GREEN),
-                MergeStatus::Blocked => ("⊘", RED),
-                MergeStatus::Conflicts => ("⚡", RED),
-                MergeStatus::Behind => ("⇣", YELLOW),
-                MergeStatus::Unstable => ("⚠", YELLOW),
-                MergeStatus::Unknown => ("…", OVERLAY_TEXT),
-            };
+            let (accent, repo_style, title_style) = row_styles(&rr.repo, rr.is_draft, selected);
+            let (ci_sym, ci_color) = ci_symbol(&rr.ci_status);
+            let (merge_sym, merge_color) = merge_symbol(&rr.merge_status);
+            let (pri_sym, pri_color) = priority_symbol(&rr.priority);
 
             let direct_cell = if rr.is_direct {
                 Cell::from(Span::styled("●", Style::default().fg(LAVENDER)))
@@ -421,7 +540,11 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
             };
 
             Row::new(vec![
-                repo_cell,
+                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+                Cell::from(Line::from(vec![
+                    accent,
+                    Span::styled(rr.repo.clone(), repo_style),
+                ])),
                 Cell::from(rr.title.clone()).style(title_style),
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 Cell::from(merge_sym).style(Style::default().fg(merge_color)),
@@ -433,13 +556,14 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = vec![
-        Constraint::Length(24),
-        Constraint::Min(20),
-        Constraint::Length(4),
-        Constraint::Length(7),
-        Constraint::Length(18),
-        Constraint::Length(12),
-        Constraint::Length(3),
+        Constraint::Length(2),  // priority
+        Constraint::Length(24), // repo
+        Constraint::Min(20),   // title
+        Constraint::Length(4),  // ci
+        Constraint::Length(7),  // merge
+        Constraint::Length(18), // author
+        Constraint::Length(12), // requested
+        Constraint::Length(3),  // direct indicator
     ];
 
     let table = Table::new(rows, widths)
@@ -494,11 +618,10 @@ fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Border block
-    let game_pixel_w = game_w * 2 + 2; // +2 for borders
-    let game_pixel_h = game_h + 2; // +2 for borders
+    let game_pixel_w = game_w * 2 + 2;
+    let game_pixel_h = game_h + 2;
     let x = area.x + (area.width.saturating_sub(game_pixel_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(game_pixel_h + 2)) / 2; // +2 for score line
+    let y = area.y + (area.height.saturating_sub(game_pixel_h + 2)) / 2;
 
     let game_area = Rect::new(x, y, game_pixel_w, game_pixel_h);
 
@@ -519,7 +642,6 @@ fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(game_area);
     frame.render_widget(block, game_area);
 
-    // Draw food
     let food = &game.food;
     let fx = inner.x + food.x as u16 * 2;
     let fy = inner.y + food.y as u16;
@@ -530,7 +652,6 @@ fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    // Draw snake
     for (i, seg) in game.snake.iter().enumerate() {
         let sx = inner.x + seg.x as u16 * 2;
         let sy = inner.y + seg.y as u16;
@@ -548,7 +669,6 @@ fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    // Game over overlay
     if game.game_over {
         let msg_y = y + game_pixel_h + 1;
         if msg_y < area.y + area.height {
@@ -583,7 +703,6 @@ fn draw_snake_game(frame: &mut Frame, area: Rect, app: &mut App) {
 
 const SURFACE_BRIGHT: Color = Color::Rgb(49, 50, 68);
 
-// Block elements for sub-cell resolution: each gives 1/8th fill
 const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 fn draw_stats(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -596,8 +715,8 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let chunks = Layout::vertical([
-        Constraint::Length(5), // metric cards
-        Constraint::Min(8),   // charts
+        Constraint::Length(5),
+        Constraint::Min(8),
     ])
     .split(area);
 
@@ -610,16 +729,16 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &mut App) {
     .split(chunks[1]);
 
     draw_gradient_chart(frame, chart_cols[0], "PRs Merged", "ship it 🚀", merged, &[
-        Color::Rgb(22, 78, 56),    // dark green
+        Color::Rgb(22, 78, 56),
         Color::Rgb(34, 120, 80),
         Color::Rgb(74, 172, 114),
-        Color::Rgb(166, 218, 149), // bright green
+        Color::Rgb(166, 218, 149),
     ]);
     draw_gradient_chart(frame, chart_cols[1], "PRs Reviewed", "unblocking others", reviewed, &[
-        Color::Rgb(60, 46, 100),   // dark purple
+        Color::Rgb(60, 46, 100),
         Color::Rgb(100, 72, 160),
         Color::Rgb(150, 120, 210),
-        Color::Rgb(180, 190, 254), // bright lavender
+        Color::Rgb(180, 190, 254),
     ]);
 }
 
@@ -719,27 +838,22 @@ fn draw_gradient_chart(
         return;
     }
 
-    // Reserve space: 1 row for labels, 1 row for axis line
     let chart_height = inner.height.saturating_sub(2) as usize;
     let max_val = stats.max().max(1);
 
     let num_weeks = stats.weeks.len();
-    // Each slot = bar chars + 1 gap. Y-axis takes 4 chars (3 digits + 1 space).
     let y_axis_width = 4usize;
     let slot_width = ((inner.width as usize).saturating_sub(y_axis_width)) / num_weeks.max(1);
     let slot_width = slot_width.max(2).min(7);
-    let bar_width = slot_width.saturating_sub(1).max(1); // bar chars within slot (rest is gap)
+    let bar_width = slot_width.saturating_sub(1).max(1);
 
-    // Build each row of the chart from top to bottom
     for row in 0..chart_height {
         let y = inner.y + row as u16;
         let row_from_bottom = chart_height - 1 - row;
-        // This row represents values in range [row_from_bottom * max_val / chart_height, ...]
         let threshold = row_from_bottom as f64 * max_val as f64 / chart_height as f64;
 
         let mut spans: Vec<Span> = Vec::new();
 
-        // Y-axis label (4 chars wide: 3 digits + 1 space)
         let mid_row = chart_height / 2;
         let mid_val = max_val / 2;
         if row == 0 {
@@ -760,7 +874,6 @@ fn draw_gradient_chart(
 
         for (_i, week) in stats.weeks.iter().enumerate() {
             let val = week.count as f64;
-            // How much of this cell is filled?
             let cell_bottom = threshold;
             let cell_top = cell_bottom + max_val as f64 / chart_height as f64;
 
@@ -776,7 +889,6 @@ fn draw_gradient_chart(
             let block_index = block_index.min(8);
             let ch = BLOCKS[block_index];
 
-            // Gradient color based on height position
             let gradient_pos = if chart_height > 1 {
                 row_from_bottom as f64 / (chart_height - 1) as f64
             } else {
@@ -792,7 +904,6 @@ fn draw_gradient_chart(
                 spans.push(Span::raw(" ".repeat(bar_width)));
             }
 
-            // Gap between bars (1 char to fill the slot)
             let gap = slot_width - bar_width;
             if gap > 0 {
                 spans.push(Span::raw(" ".repeat(gap)));
@@ -805,7 +916,6 @@ fn draw_gradient_chart(
         );
     }
 
-    // Axis line
     let axis_y = inner.y + chart_height as u16;
     let axis_line: String = " ".repeat(y_axis_width)
         + &"─".repeat(inner.width.saturating_sub(y_axis_width as u16) as usize);
@@ -814,15 +924,13 @@ fn draw_gradient_chart(
         Rect::new(inner.x, axis_y, inner.width, 1),
     );
 
-    // Week labels
     let label_y = inner.y + chart_height as u16 + 1;
     if label_y < inner.y + inner.height {
         let mut label_spans: Vec<Span> = Vec::new();
-        label_spans.push(Span::raw(" ".repeat(y_axis_width))); // y-axis offset
+        label_spans.push(Span::raw(" ".repeat(y_axis_width)));
 
         for (i, _) in stats.weeks.iter().enumerate() {
             let label = stats.label(i);
-            // Only show every Nth label to avoid crowding
             let show_label = if num_weeks <= 6 {
                 true
             } else if num_weeks <= 12 {
@@ -925,8 +1033,8 @@ fn draw_error(frame: &mut Frame, area: Rect, message: &str) {
 // ── Help overlay ────────────────────────────────────────────────────
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
-    let width = 44u16;
-    let height = 30u16;
+    let width = 48u16;
+    let height = 36u16;
     let x = area.width.saturating_sub(width) / 2;
     let y = area.height.saturating_sub(height) / 2;
     let overlay = Rect::new(x, y, width.min(area.width), height.min(area.height));
@@ -940,13 +1048,36 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
             Style::default().fg(LAVENDER).bold(),
         )),
         Line::from(""),
-        help_line("  ↑ / ↓     ", "Navigate rows"),
-        help_line("  Enter     ", "Open PR in browser"),
-        help_line("  Tab       ", "Switch view"),
-        help_line("  1 / 2 / 3 ", "Jump to view"),
-        help_line("  r         ", "Refresh data"),
-        help_line("  s         ", "Toggle sort order"),
-        help_line("  q / Esc   ", "Quit"),
+        help_line("  ↑ / ↓         ", "Navigate rows"),
+        help_line("  Enter         ", "Open in browser"),
+        help_line("  Tab           ", "Switch view"),
+        help_line("  1 / 2 / 3 / 4 ", "Jump to view"),
+        help_line("  r             ", "Refresh data"),
+        help_line("  s             ", "Cycle sort order"),
+        help_line("  q / Esc       ", "Quit"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  INBOX",
+            Style::default().fg(LAVENDER).bold(),
+        )),
+        Line::from(""),
+        help_line("  d             ", "Mark as read"),
+        help_line("  D             ", "Mark all as read"),
+        help_line("  f             ", "Cycle filter"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  PRIORITY",
+            Style::default().fg(LAVENDER).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  !!", Style::default().fg(RED)),
+            Span::styled(" critical  ", Style::default().fg(SUBTEXT)),
+            Span::styled("! ", Style::default().fg(YELLOW)),
+            Span::styled(" high  ", Style::default().fg(SUBTEXT)),
+            Span::styled("· ", Style::default().fg(OVERLAY_TEXT)),
+            Span::styled(" medium", Style::default().fg(SUBTEXT)),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "  REVIEWS",
