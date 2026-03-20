@@ -26,6 +26,50 @@ pub enum MergeStatus {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Priority {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Priority::Critical => write!(f, "!!"),
+            Priority::High => write!(f, "! "),
+            Priority::Medium => write!(f, "· "),
+            Priority::Low => write!(f, "  "),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NotificationReason {
+    Mention,
+    ReviewRequested,
+    CiActivity,
+    Assign,
+    Comment,
+    StateChange,
+    Other,
+}
+
+impl NotificationReason {
+    pub fn from_api_string(s: &str) -> Self {
+        match s {
+            "mention" => Self::Mention,
+            "review_requested" => Self::ReviewRequested,
+            "ci_activity" => Self::CiActivity,
+            "assign" => Self::Assign,
+            "comment" => Self::Comment,
+            "state_change" => Self::StateChange,
+            _ => Self::Other,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PullRequest {
     pub repo: String,
@@ -37,6 +81,8 @@ pub struct PullRequest {
     pub updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub is_draft: bool,
+    pub priority: Priority,
+    pub priority_score: i32,
 }
 
 impl PullRequest {
@@ -61,11 +107,33 @@ pub struct ReviewRequest {
     pub is_draft: bool,
     pub ci_status: CiStatus,
     pub merge_status: MergeStatus,
+    pub priority: Priority,
+    pub priority_score: i32,
 }
 
 impl ReviewRequest {
     pub fn age_string(&self) -> String {
         format_relative_time(self.requested_at)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub id: String,
+    pub reason: NotificationReason,
+    pub subject_title: String,
+    pub subject_url: String,
+    pub repo: String,
+    pub updated_at: DateTime<Utc>,
+    pub unread: bool,
+    pub pending_read: bool,
+    pub priority: Priority,
+    pub priority_score: i32,
+}
+
+impl Notification {
+    pub fn age_string(&self) -> String {
+        format_relative_time(self.updated_at)
     }
 }
 
@@ -182,5 +250,30 @@ fn format_relative_time(dt: DateTime<Utc>) -> String {
         format!("{}d ago", days)
     } else {
         format!("{}mo ago", days / 30)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_reason_from_api_string() {
+        assert_eq!(NotificationReason::from_api_string("mention"), NotificationReason::Mention);
+        assert_eq!(NotificationReason::from_api_string("review_requested"), NotificationReason::ReviewRequested);
+        assert_eq!(NotificationReason::from_api_string("ci_activity"), NotificationReason::CiActivity);
+        assert_eq!(NotificationReason::from_api_string("assign"), NotificationReason::Assign);
+        assert_eq!(NotificationReason::from_api_string("comment"), NotificationReason::Comment);
+        assert_eq!(NotificationReason::from_api_string("state_change"), NotificationReason::StateChange);
+        assert_eq!(NotificationReason::from_api_string("unknown_thing"), NotificationReason::Other);
+        assert_eq!(NotificationReason::from_api_string(""), NotificationReason::Other);
+    }
+
+    #[test]
+    fn priority_display() {
+        assert_eq!(format!("{}", Priority::Critical), "!!");
+        assert_eq!(format!("{}", Priority::High), "! ");
+        assert_eq!(format!("{}", Priority::Medium), "· ");
+        assert_eq!(format!("{}", Priority::Low), "  ");
     }
 }
