@@ -70,6 +70,13 @@ enum DataMsg {
     NotificationAllReadErr {
         error: String,
     },
+    NotificationSubjectState {
+        notification_id: String,
+        state: types::SubjectState,
+        is_draft: bool,
+        author: String,
+        merge_status: types::MergeStatus,
+    },
     Error(String),
 }
 
@@ -212,6 +219,26 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                     if app.state == app::AppState::Loading {
                         app.state = app::AppState::Ready;
                     }
+                    // Enrich subject state for notifications that pass reason filter
+                    if let Some(ref client) = client {
+                        let to_enrich: Vec<(String, String)> = app
+                            .notifications
+                            .iter()
+                            .filter(|n| {
+                                !matches!(
+                                    n.reason,
+                                    types::NotificationReason::CiActivity
+                                        | types::NotificationReason::StateChange
+                                )
+                            })
+                            .filter_map(|n| {
+                                n.subject_api_url
+                                    .as_ref()
+                                    .map(|url| (n.id.clone(), url.clone()))
+                            })
+                            .collect();
+                        spawn_notification_enrichment(client.clone(), to_enrich, tx.clone());
+                    }
                 }
                 DataMsg::NotificationScopeMissing => {
                     app.notification_scope_missing = true;
@@ -239,6 +266,25 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         notif.pending_read = false;
                     }
                     app.status_error = Some(format!("Mark all read failed: {}", error));
+                }
+                DataMsg::NotificationSubjectState {
+                    notification_id,
+                    state,
+                    is_draft,
+                    author,
+                    merge_status,
+                } => {
+                    if let Some(notif) = app
+                        .notifications
+                        .iter_mut()
+                        .find(|n| n.id == notification_id)
+                    {
+                        notif.subject_state = state;
+                        notif.is_draft = is_draft;
+                        notif.author = author;
+                        notif.merge_status = merge_status;
+                    }
+                    app.clamp_indices();
                 }
                 DataMsg::Error(msg) => {
                     app.error_message = msg;
@@ -493,6 +539,42 @@ fn spawn_mark_all_notifications_read(
                     })
                     .await;
             }
+        }
+    });
+}
+
+fn spawn_notification_enrichment(
+    client: Arc<GitHubClient>,
+    notifications: Vec<(String, String)>, // (id, subject_api_url)
+    tx: mpsc::Sender<DataMsg>,
+) {
+    tokio::spawn(async move {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut handles = Vec::new();
+
+        for (notification_id, api_url) in notifications {
+            let client = Arc::clone(&client);
+            let tx = tx.clone();
+            let sem = Arc::clone(&semaphore);
+
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await;
+                let (state, is_draft, author, merge_status) =
+                    client.fetch_subject_state(&api_url).await;
+                let _ = tx
+                    .send(DataMsg::NotificationSubjectState {
+                        notification_id,
+                        state,
+                        is_draft,
+                        author,
+                        merge_status,
+                    })
+                    .await;
+            }));
+        }
+
+        for h in handles {
+            let _ = h.await;
         }
     });
 }

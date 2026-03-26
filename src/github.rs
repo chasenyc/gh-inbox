@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::types::{
     CiStatus, MergeStatus, Notification, NotificationReason, Priority, PullRequest, ReviewRequest,
-    ReviewStatus, WeeklyStats,
+    ReviewStatus, SubjectState, WeeklyStats,
 };
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -290,6 +290,7 @@ impl GitHubClient {
             .into_iter()
             .map(|item| {
                 let reason = NotificationReason::from_api_string(&item.reason);
+                let subject_api_url = item.subject.url.clone();
                 let subject_url = item
                     .subject
                     .url
@@ -301,6 +302,11 @@ impl GitHubClient {
                     reason,
                     subject_title: item.subject.title,
                     subject_url,
+                    subject_api_url,
+                    subject_state: SubjectState::Unknown,
+                    is_draft: false,
+                    author: String::new(),
+                    merge_status: MergeStatus::Unknown,
                     repo: item.repository.full_name,
                     updated_at: item.updated_at,
                     unread: item.unread,
@@ -321,6 +327,61 @@ impl GitHubClient {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    /// Fetch the state of a notification's subject (open/closed/merged).
+    /// Fetch enrichment data from a notification's subject URL.
+    /// Returns (SubjectState, is_draft, author, MergeStatus). Fails open on error.
+    pub async fn fetch_subject_state(
+        &self,
+        api_url: &str,
+    ) -> (SubjectState, bool, String, MergeStatus) {
+        #[derive(Deserialize)]
+        struct SubjectUser {
+            login: String,
+        }
+        #[derive(Deserialize)]
+        struct SubjectResponse {
+            state: Option<String>,
+            merged: Option<bool>,
+            draft: Option<bool>,
+            user: Option<SubjectUser>,
+            mergeable_state: Option<String>,
+        }
+
+        let resp: SubjectResponse = match self
+            .auth_get(api_url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
+            Ok(resp) => match resp.json().await {
+                Ok(r) => r,
+                Err(_) => return (SubjectState::Unknown, false, String::new(), MergeStatus::Unknown),
+            },
+            Err(_) => return (SubjectState::Unknown, false, String::new(), MergeStatus::Unknown),
+        };
+
+        let is_draft = resp.draft.unwrap_or(false);
+        let author = resp.user.map(|u| u.login).unwrap_or_default();
+        let merge_status = match resp.mergeable_state.as_deref() {
+            Some("clean") => MergeStatus::Ready,
+            Some("blocked") => MergeStatus::Blocked,
+            Some("dirty") => MergeStatus::Conflicts,
+            Some("behind") => MergeStatus::Behind,
+            Some("unstable") => MergeStatus::Unstable,
+            _ => MergeStatus::Unknown,
+        };
+        let state = if resp.merged == Some(true) {
+            SubjectState::Merged
+        } else {
+            match resp.state.as_deref() {
+                Some("open") => SubjectState::Open,
+                Some("closed") => SubjectState::Closed,
+                _ => SubjectState::Unknown,
+            }
+        };
+        (state, is_draft, author, merge_status)
     }
 
     pub async fn mark_all_notifications_read(&self) -> Result<()> {

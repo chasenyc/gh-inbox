@@ -71,10 +71,10 @@ fn merge_symbol(status: &MergeStatus) -> (&'static str, Color) {
 
 fn priority_symbol(priority: &Priority) -> (&'static str, Color) {
     match priority {
-        Priority::Critical => ("!!", RED),
-        Priority::High => ("! ", YELLOW),
-        Priority::Medium => ("· ", OVERLAY_TEXT),
-        Priority::Low => ("  ", OVERLAY_TEXT),
+        Priority::Critical => ("●", RED),
+        Priority::High => ("●", AMBER),
+        Priority::Medium => ("●", GREEN),
+        Priority::Low => (" ", OVERLAY_TEXT),
     }
 }
 
@@ -220,7 +220,11 @@ fn footer_hints(app: &App) -> Line<'static> {
         spans.push(Span::styled("d", Style::default().fg(SUBTEXT).bold()));
         spans.push(Span::styled(" read ", Style::default().fg(OVERLAY_TEXT)));
         spans.push(Span::styled("f", Style::default().fg(SUBTEXT).bold()));
-        spans.push(Span::styled(" filter ", Style::default().fg(OVERLAY_TEXT)));
+        let filter_label = match app.inbox_filter {
+            InboxFilter::Smart => " show all ",
+            InboxFilter::All => " smart filter ",
+        };
+        spans.push(Span::styled(filter_label, Style::default().fg(OVERLAY_TEXT)));
     }
 
     spans.push(Span::styled("?", Style::default().fg(SUBTEXT).bold()));
@@ -234,11 +238,16 @@ fn footer_hints(app: &App) -> Line<'static> {
 // ── Tab bar ─────────────────────────────────────────────────────────
 
 fn draw_tabs(frame: &mut Frame, area: Rect, app: &App) {
-    let inbox_count = app.filtered_notification_indices().len();
-    let inbox_label = format!("Inbox{}", app.inbox_filter.label());
+    let filtered_count = app.filtered_notification_indices().len();
+    let total_count = app.notifications.len();
+    let inbox_label = if app.inbox_filter == InboxFilter::Smart && filtered_count != total_count {
+        format!("Inbox ({}/{})", filtered_count, total_count)
+    } else {
+        format!("Inbox{}", app.inbox_filter.label())
+    };
 
     let (inbox_dot, inbox_label_span, inbox_count_s) =
-        tab_spans(&inbox_label, Some(inbox_count), app.tab == Tab::Inbox);
+        tab_spans(&inbox_label, Some(filtered_count), app.tab == Tab::Inbox);
     let (my_dot, my_label, my_count_s) =
         tab_spans("My PRs", Some(app.my_prs.len()), app.tab == Tab::MyPrs);
     let (rev_dot, rev_label, rev_count_s) =
@@ -331,10 +340,9 @@ fn draw_inbox(frame: &mut Frame, area: Rect, app: &mut App) {
     let filtered_indices = app.filtered_notification_indices();
 
     if filtered_indices.is_empty() {
-        let msg = if app.inbox_filter != InboxFilter::All {
-            "No notifications match this filter"
-        } else {
-            "All caught up!"
+        let msg = match app.inbox_filter {
+            InboxFilter::Smart => "All caught up! (press f for all notifications)",
+            InboxFilter::All => "All caught up!",
         };
         draw_centered_message(frame, area, msg, OVERLAY_TEXT);
         return;
@@ -345,6 +353,8 @@ fn draw_inbox(frame: &mut Frame, area: Rect, app: &mut App) {
         Cell::from(" "),
         Cell::from("   REPO"),
         Cell::from("TITLE"),
+        Cell::from("MERGE"),
+        Cell::from("AUTHOR"),
         Cell::from("AGE"),
     ])
     .style(Style::default().fg(OVERLAY_TEXT).bold())
@@ -362,7 +372,8 @@ fn draw_inbox(frame: &mut Frame, area: Rect, app: &mut App) {
 
             let (pri_sym, pri_color) = priority_symbol(&notif.priority);
             let (reason_sym, reason_color) = reason_icon(&notif.reason);
-            let (accent, repo_style, title_style) = row_styles(&notif.repo, false, is_selected);
+            let (accent, repo_style, title_style) = row_styles(&notif.repo, notif.is_draft, is_selected);
+            let (merge_sym, merge_color) = merge_symbol(&notif.merge_status);
 
             let base_title_style = if notif.unread {
                 title_style.bold()
@@ -378,16 +389,20 @@ fn draw_inbox(frame: &mut Frame, area: Rect, app: &mut App) {
                     Span::styled(notif.repo.clone(), repo_style),
                 ])),
                 Cell::from(notif.subject_title.clone()).style(base_title_style),
+                Cell::from(merge_sym).style(Style::default().fg(merge_color)),
+                Cell::from(notif.author.clone()).style(Style::default().fg(SUBTEXT)),
                 Cell::from(notif.age_string()).style(Style::default().fg(SUBTEXT)),
             ])
         })
         .collect();
 
     let widths = vec![
-        Constraint::Length(2),  // priority
+        Constraint::Length(1),  // priority
         Constraint::Length(2),  // reason
         Constraint::Length(24), // repo
         Constraint::Min(20),   // title
+        Constraint::Length(7),  // merge
+        Constraint::Length(18), // author
         Constraint::Length(10), // age
     ];
 
@@ -482,7 +497,7 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = vec![
-        Constraint::Length(2),  // priority
+        Constraint::Length(1),  // priority
         Constraint::Length(24), // repo
         Constraint::Min(20),   // title
         Constraint::Length(4),  // ci
@@ -556,7 +571,7 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = vec![
-        Constraint::Length(2),  // priority
+        Constraint::Length(1),  // priority
         Constraint::Length(24), // repo
         Constraint::Min(20),   // title
         Constraint::Length(4),  // ci

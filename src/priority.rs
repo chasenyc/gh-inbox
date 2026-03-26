@@ -11,6 +11,7 @@ use crate::types::{CiStatus, MergeStatus, NotificationReason, Priority, ReviewSt
 // │ Direct review request (you, not team)   │ +20    │
 // │ PR has merge conflicts                  │ +15    │
 // │ Team review request                     │ +10    │
+// │ Assignment (notification)                │ +15    │
 // │ New comment on your PR                  │ +10    │
 // │ PR is stale (7+ days)                   │ +5     │
 // │ PR is draft                             │ -10    │
@@ -25,6 +26,7 @@ const W_CI_FAILING: i32 = 40;
 const W_CHANGES_REQUESTED: i32 = 30;
 const W_DIRECT_MENTION: i32 = 25;
 const W_DIRECT_REVIEW_REQUEST: i32 = 20;
+const W_ASSIGN: i32 = 15;
 const W_MERGE_CONFLICTS: i32 = 15;
 const W_TEAM_REVIEW_REQUEST: i32 = 10;
 const W_NEW_COMMENT: i32 = 10;
@@ -64,6 +66,7 @@ pub fn compute_priority(ctx: &PriorityContext) -> (Priority, i32) {
                 score += W_TEAM_REVIEW_REQUEST;
             }
         }
+        Some(NotificationReason::Assign) => score += W_ASSIGN,
         Some(_) => {}
         None => {
             if ctx.is_direct_review_request {

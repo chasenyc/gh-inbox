@@ -45,6 +45,14 @@ impl std::fmt::Display for Priority {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SubjectState {
+    Unknown,
+    Open,
+    Closed,
+    Merged,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotificationReason {
     Mention,
@@ -123,6 +131,11 @@ pub struct Notification {
     pub reason: NotificationReason,
     pub subject_title: String,
     pub subject_url: String,
+    pub subject_api_url: Option<String>,
+    pub subject_state: SubjectState,
+    pub is_draft: bool,
+    pub author: String,
+    pub merge_status: MergeStatus,
     pub repo: String,
     pub updated_at: DateTime<Utc>,
     pub unread: bool,

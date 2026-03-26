@@ -33,25 +33,22 @@ pub enum SortOrder {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InboxFilter {
+    Smart,
     All,
-    HighAndCritical,
-    CriticalOnly,
 }
 
 impl InboxFilter {
     pub fn next(self) -> Self {
         match self {
-            InboxFilter::All => InboxFilter::HighAndCritical,
-            InboxFilter::HighAndCritical => InboxFilter::CriticalOnly,
-            InboxFilter::CriticalOnly => InboxFilter::All,
+            InboxFilter::Smart => InboxFilter::All,
+            InboxFilter::All => InboxFilter::Smart,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            InboxFilter::All => "",
-            InboxFilter::HighAndCritical => " [High+]",
-            InboxFilter::CriticalOnly => " [Critical]",
+            InboxFilter::Smart => "",
+            InboxFilter::All => " [All]",
         }
     }
 }
@@ -103,7 +100,7 @@ impl App {
             reviewed_stats: None,
             snake_game: None,
             notifications_last_modified: None,
-            inbox_filter: InboxFilter::All,
+            inbox_filter: InboxFilter::Smart,
             notification_scope_missing: false,
             pending_mark_read: None,
             pending_mark_all_read: false,
@@ -291,17 +288,24 @@ impl App {
     }
 
     pub fn filtered_notification_indices(&self) -> Vec<usize> {
-        use crate::types::Priority;
+        use crate::types::{NotificationReason, SubjectState};
         self.notifications
             .iter()
             .enumerate()
             .filter(|(_, n)| !n.pending_read)
             .filter(|(_, n)| match self.inbox_filter {
-                InboxFilter::All => true,
-                InboxFilter::HighAndCritical => {
-                    n.priority == Priority::Critical || n.priority == Priority::High
+                InboxFilter::Smart => {
+                    // Hide CI activity and state changes (noise, never actionable)
+                    if matches!(
+                        n.reason,
+                        NotificationReason::CiActivity | NotificationReason::StateChange
+                    ) {
+                        return false;
+                    }
+                    // Only show once we've confirmed the subject is open
+                    n.subject_state == SubjectState::Open
                 }
-                InboxFilter::CriticalOnly => n.priority == Priority::Critical,
+                InboxFilter::All => true,
             })
             .map(|(i, _)| i)
             .collect()
