@@ -91,6 +91,8 @@ pub struct PullRequest {
     pub is_draft: bool,
     pub priority: Priority,
     pub priority_score: i32,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
 }
 
 impl PullRequest {
@@ -117,6 +119,8 @@ pub struct ReviewRequest {
     pub merge_status: MergeStatus,
     pub priority: Priority,
     pub priority_score: i32,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
 }
 
 impl ReviewRequest {

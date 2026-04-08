@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 
@@ -6,6 +8,20 @@ use crate::snake::SnakeGame;
 use crate::types::{
     CiStatus, MergeStatus, Notification, PullRequest, ReviewRequest, ReviewStatus, WeeklyStats,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StackPosition {
+    Standalone,
+    StackBase,
+    StackMiddle,
+    StackTop,
+}
+
+#[derive(Debug, Clone)]
+pub struct StackEntry {
+    pub original_index: usize,
+    pub stack_position: StackPosition,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tab {
@@ -77,6 +93,8 @@ pub struct App {
     pub pending_mark_read: Option<String>,
     pub pending_mark_all_read: bool,
     pub status_error: Option<String>,
+    pub my_prs_display_order: Vec<StackEntry>,
+    pub reviews_display_order: Vec<StackEntry>,
 }
 
 impl App {
@@ -105,6 +123,8 @@ impl App {
             pending_mark_read: None,
             pending_mark_all_read: false,
             status_error: None,
+            my_prs_display_order: Vec::new(),
+            reviews_display_order: Vec::new(),
         }
     }
 
@@ -237,8 +257,8 @@ impl App {
         let inbox_len = self.filtered_notification_indices().len();
         let (table_state, len) = match self.tab {
             Tab::Inbox => (&mut self.inbox_table_state, inbox_len),
-            Tab::MyPrs => (&mut self.my_prs_table_state, self.my_prs.len()),
-            Tab::ReviewRequests => (&mut self.reviews_table_state, self.review_requests.len()),
+            Tab::MyPrs => (&mut self.my_prs_table_state, self.my_prs_display_order.len()),
+            Tab::ReviewRequests => (&mut self.reviews_table_state, self.reviews_display_order.len()),
             Tab::Stats => return,
         };
 
@@ -262,11 +282,15 @@ impl App {
             }
             Tab::MyPrs => {
                 let i = self.my_prs_table_state.selected().unwrap_or(0);
-                self.my_prs.get(i).map(|pr| pr.url.clone())
+                self.my_prs_display_order.get(i)
+                    .and_then(|e| self.my_prs.get(e.original_index))
+                    .map(|pr| pr.url.clone())
             }
             Tab::ReviewRequests => {
                 let i = self.reviews_table_state.selected().unwrap_or(0);
-                self.review_requests.get(i).map(|rr| rr.url.clone())
+                self.reviews_display_order.get(i)
+                    .and_then(|e| self.review_requests.get(e.original_index))
+                    .map(|rr| rr.url.clone())
             }
             Tab::Stats => None,
         };
@@ -338,18 +362,21 @@ impl App {
                 });
             }
         }
+        self.recompute_display_order();
     }
 
     pub fn clamp_indices(&mut self) {
+        let my_prs_len = self.my_prs_display_order.len().max(self.my_prs.len());
         let my_prs_sel = self.my_prs_table_state.selected().unwrap_or(0);
-        if !self.my_prs.is_empty() {
-            self.my_prs_table_state.select(Some(my_prs_sel.min(self.my_prs.len() - 1)));
+        if my_prs_len > 0 {
+            self.my_prs_table_state.select(Some(my_prs_sel.min(my_prs_len - 1)));
         } else {
             self.my_prs_table_state.select(Some(0));
         }
+        let reviews_len = self.reviews_display_order.len().max(self.review_requests.len());
         let reviews_sel = self.reviews_table_state.selected().unwrap_or(0);
-        if !self.review_requests.is_empty() {
-            self.reviews_table_state.select(Some(reviews_sel.min(self.review_requests.len() - 1)));
+        if reviews_len > 0 {
+            self.reviews_table_state.select(Some(reviews_sel.min(reviews_len - 1)));
         } else {
             self.reviews_table_state.select(Some(0));
         }
@@ -415,4 +442,133 @@ impl App {
             notif.priority_score = s;
         }
     }
+
+    /// Recompute display order for My PRs and Review Requests, grouping stacked PRs.
+    pub fn recompute_display_order(&mut self) {
+        self.my_prs_display_order = compute_stack_order(
+            self.my_prs.iter().map(|pr| (pr.repo.as_str(), pr.head_ref.as_deref(), pr.base_ref.as_deref())).collect(),
+        );
+        self.reviews_display_order = compute_stack_order(
+            self.review_requests.iter().map(|rr| (rr.repo.as_str(), rr.head_ref.as_deref(), rr.base_ref.as_deref())).collect(),
+        );
+    }
+}
+
+/// Given a list of (repo, head_ref, base_ref) tuples indexed by position,
+/// compute a display order that groups stacked PRs together (base first).
+fn compute_stack_order(items: Vec<(&str, Option<&str>, Option<&str>)>) -> Vec<StackEntry> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    // Group indices by repo
+    let mut by_repo: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, (repo, _, _)) in items.iter().enumerate() {
+        by_repo.entry(repo).or_default().push(i);
+    }
+
+    // Track which indices are part of a stack
+    let mut in_stack: Vec<bool> = vec![false; items.len()];
+    // Collect ordered stacks: each stack is a Vec of indices from base to tip
+    let mut stacks: Vec<Vec<usize>> = Vec::new();
+
+    for (_repo, indices) in &by_repo {
+        if indices.len() < 2 {
+            continue;
+        }
+
+        // Build a map: head_ref -> index (for PRs that have branch info)
+        let mut head_to_idx: HashMap<&str, usize> = HashMap::new();
+        for &i in indices {
+            if let Some(head) = items[i].1 {
+                head_to_idx.insert(head, i);
+            }
+        }
+
+        // Find chains: a PR is a child if its base_ref matches another PR's head_ref
+        // parent[i] = Some(j) means PR i's base_ref == PR j's head_ref
+        let mut parent: HashMap<usize, usize> = HashMap::new();
+        let mut children: HashMap<usize, usize> = HashMap::new();
+        for &i in indices {
+            if let Some(base) = items[i].2 {
+                if let Some(&parent_idx) = head_to_idx.get(base) {
+                    if parent_idx != i {
+                        parent.insert(i, parent_idx);
+                        children.insert(parent_idx, i);
+                    }
+                }
+            }
+        }
+
+        // Find roots: PRs that are parents but not children themselves
+        let roots: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|i| children.contains_key(i) || parent.contains_key(i))
+            .filter(|i| !parent.contains_key(i))
+            .collect();
+
+        for root in roots {
+            let mut chain = vec![root];
+            let mut current = root;
+            // Walk from root to tip
+            while let Some(&child) = children.get(&current) {
+                chain.push(child);
+                current = child;
+            }
+            if chain.len() >= 2 {
+                for &idx in &chain {
+                    in_stack[idx] = true;
+                }
+                stacks.push(chain);
+            }
+        }
+    }
+
+    // Build final display order: preserve original ordering for standalone items,
+    // insert stacks at the position of their first (base) member
+    let mut result: Vec<StackEntry> = Vec::with_capacity(items.len());
+    let mut stack_inserted: Vec<bool> = vec![false; stacks.len()];
+
+    // Map each stacked index to its stack number for insertion
+    let mut idx_to_stack: HashMap<usize, usize> = HashMap::new();
+    for (si, stack) in stacks.iter().enumerate() {
+        for &idx in stack {
+            idx_to_stack.insert(idx, si);
+        }
+    }
+
+    for i in 0..items.len() {
+        if in_stack[i] {
+            if let Some(&si) = idx_to_stack.get(&i) {
+                if !stack_inserted[si] {
+                    stack_inserted[si] = true;
+                    let chain = &stacks[si];
+                    let last = chain.len() - 1;
+                    for (pos, &idx) in chain.iter().enumerate() {
+                        let stack_position = if pos == 0 && last == 0 {
+                            StackPosition::Standalone
+                        } else if pos == 0 {
+                            StackPosition::StackBase
+                        } else if pos == last {
+                            StackPosition::StackTop
+                        } else {
+                            StackPosition::StackMiddle
+                        };
+                        result.push(StackEntry {
+                            original_index: idx,
+                            stack_position,
+                        });
+                    }
+                }
+            }
+        } else {
+            result.push(StackEntry {
+                original_index: i,
+                stack_position: StackPosition::Standalone,
+            });
+        }
+    }
+
+    result
 }

@@ -60,12 +60,20 @@ struct Review {
 }
 
 #[derive(Deserialize)]
+struct BranchRef {
+    #[serde(rename = "ref")]
+    ref_name: String,
+}
+
+#[derive(Deserialize)]
 struct PrDetail {
     #[serde(default)]
     requested_reviewers: Vec<GitHubUser>,
     #[serde(default)]
     requested_teams: Vec<TeamRef>,
     mergeable_state: Option<String>,
+    head: Option<BranchRef>,
+    base: Option<BranchRef>,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +213,8 @@ impl GitHubClient {
                     is_draft: item.draft.unwrap_or(false),
                     priority: Priority::Low,
                     priority_score: 0,
+                    head_ref: None,
+                    base_ref: None,
                 }
             })
             .collect();
@@ -249,6 +259,8 @@ impl GitHubClient {
                     merge_status: MergeStatus::Unknown,
                     priority: Priority::Low,
                     priority_score: 0,
+                    head_ref: None,
+                    base_ref: None,
                 }
             })
             .collect();
@@ -468,10 +480,10 @@ impl GitHubClient {
         &self,
         repo: &str,
         pr_url: &str,
-    ) -> (ReviewStatus, MergeStatus) {
+    ) -> (ReviewStatus, MergeStatus, Option<String>, Option<String>) {
         let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
             Some(n) => n,
-            None => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
+            None => return (ReviewStatus::NoReviewers, MergeStatus::Unknown, None, None),
         };
 
         // Fetch PR details (reviewers + mergeable_state)
@@ -484,10 +496,13 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(d) => d,
-                Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
+                Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown, None, None),
             },
-            Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown),
+            Err(_) => return (ReviewStatus::NoReviewers, MergeStatus::Unknown, None, None),
         };
+
+        let head_ref = detail.head.as_ref().map(|b| b.ref_name.clone());
+        let base_ref = detail.base.as_ref().map(|b| b.ref_name.clone());
 
         // Extract merge status from the same response
         let merge_status = match detail.mergeable_state.as_deref() {
@@ -512,9 +527,9 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(r) => r,
-                Err(_) => return (ReviewStatus::NoReviewers, merge_status),
+                Err(_) => return (ReviewStatus::NoReviewers, merge_status, head_ref.clone(), base_ref.clone()),
             },
-            Err(_) => return (ReviewStatus::NoReviewers, merge_status),
+            Err(_) => return (ReviewStatus::NoReviewers, merge_status, head_ref.clone(), base_ref.clone()),
         };
 
         let has_reviewers = !detail.requested_reviewers.is_empty()
@@ -522,7 +537,7 @@ impl GitHubClient {
             || !reviews.is_empty();
 
         if !has_reviewers {
-            return (ReviewStatus::NoReviewers, merge_status);
+            return (ReviewStatus::NoReviewers, merge_status, head_ref, base_ref);
         }
 
         // Keep only the latest review per author (reviews are returned chronologically)
@@ -551,13 +566,13 @@ impl GitHubClient {
             ReviewStatus::Pending
         };
 
-        (review_status, merge_status)
+        (review_status, merge_status, head_ref, base_ref)
     }
 
-    pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> (bool, MergeStatus) {
+    pub async fn fetch_is_direct_request(&self, repo: &str, pr_url: &str) -> (bool, MergeStatus, Option<String>, Option<String>) {
         let number = match pr_url.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
             Some(n) => n,
-            None => return (false, MergeStatus::Unknown),
+            None => return (false, MergeStatus::Unknown, None, None),
         };
 
         let detail_url = format!("{}/repos/{}/pulls/{}", GITHUB_API, repo, number);
@@ -569,15 +584,18 @@ impl GitHubClient {
         {
             Ok(resp) => match resp.json().await {
                 Ok(d) => d,
-                Err(_) => return (false, MergeStatus::Unknown),
+                Err(_) => return (false, MergeStatus::Unknown, None, None),
             },
-            Err(_) => return (false, MergeStatus::Unknown),
+            Err(_) => return (false, MergeStatus::Unknown, None, None),
         };
 
         let is_direct = detail
             .requested_reviewers
             .iter()
             .any(|u| u.login.eq_ignore_ascii_case(&self.username));
+
+        let head_ref = detail.head.as_ref().map(|b| b.ref_name.clone());
+        let base_ref = detail.base.as_ref().map(|b| b.ref_name.clone());
 
         let merge_status = match detail.mergeable_state.as_deref() {
             Some("clean") => MergeStatus::Ready,
@@ -588,7 +606,7 @@ impl GitHubClient {
             _ => MergeStatus::Unknown,
         };
 
-        (is_direct, merge_status)
+        (is_direct, merge_status, head_ref, base_ref)
     }
 
     pub async fn fetch_merged_prs_stats(&self, num_weeks: usize) -> WeeklyStats {
