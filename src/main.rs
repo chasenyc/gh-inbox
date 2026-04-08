@@ -49,6 +49,16 @@ enum DataMsg {
         index: usize,
         status: types::MergeStatus,
     },
+    BranchInfo {
+        index: usize,
+        head_ref: Option<String>,
+        base_ref: Option<String>,
+    },
+    ReviewBranchInfo {
+        index: usize,
+        head_ref: Option<String>,
+        base_ref: Option<String>,
+    },
     StatsData {
         merged: types::WeeklyStats,
         reviewed: types::WeeklyStats,
@@ -156,6 +166,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                     app.my_prs = my_prs;
                     app.review_requests = review_requests;
                     app.sort_order = app::SortOrder::NewestFirst;
+                    app.recompute_display_order();
                     app.state = app::AppState::Ready;
                     app.clamp_indices();
                 }
@@ -194,6 +205,20 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         rr.merge_status = status;
                     }
                     app.recompute_review_priority(index);
+                }
+                DataMsg::BranchInfo { index, head_ref, base_ref } => {
+                    if let Some(pr) = app.my_prs.get_mut(index) {
+                        pr.head_ref = head_ref;
+                        pr.base_ref = base_ref;
+                    }
+                    app.recompute_display_order();
+                }
+                DataMsg::ReviewBranchInfo { index, head_ref, base_ref } => {
+                    if let Some(rr) = app.review_requests.get_mut(index) {
+                        rr.head_ref = head_ref;
+                        rr.base_ref = base_ref;
+                    }
+                    app.recompute_display_order();
                 }
                 DataMsg::StatsData { merged, reviewed } => {
                     app.merged_stats = Some(merged);
@@ -409,7 +434,7 @@ fn spawn_data_fetch(client: Arc<GitHubClient>, tx: mpsc::Sender<DataMsg>) {
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await;
 
-                let (ci, (review, merge)) = tokio::join!(
+                let (ci, (review, merge, head_ref, base_ref)) = tokio::join!(
                     client.fetch_ci_status(&repo, &url),
                     client.fetch_review_and_merge_status(&repo, &url),
                 );
@@ -427,6 +452,13 @@ fn spawn_data_fetch(client: Arc<GitHubClient>, tx: mpsc::Sender<DataMsg>) {
                         status: merge,
                     })
                     .await;
+                let _ = tx
+                    .send(DataMsg::BranchInfo {
+                        index: i,
+                        head_ref,
+                        base_ref,
+                    })
+                    .await;
             }));
         }
 
@@ -440,7 +472,7 @@ fn spawn_data_fetch(client: Arc<GitHubClient>, tx: mpsc::Sender<DataMsg>) {
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await;
 
-                let ((is_direct, merge), ci) = tokio::join!(
+                let ((is_direct, merge, head_ref, base_ref), ci) = tokio::join!(
                     client.fetch_is_direct_request(&repo, &url),
                     client.fetch_ci_status(&repo, &url),
                 );
@@ -452,6 +484,13 @@ fn spawn_data_fetch(client: Arc<GitHubClient>, tx: mpsc::Sender<DataMsg>) {
                     .await;
                 let _ = tx
                     .send(DataMsg::ReviewMergeStatusUpdate { index: i, status: merge })
+                    .await;
+                let _ = tx
+                    .send(DataMsg::ReviewBranchInfo {
+                        index: i,
+                        head_ref,
+                        base_ref,
+                    })
                     .await;
             }));
         }

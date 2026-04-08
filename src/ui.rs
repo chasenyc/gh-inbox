@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table},
 };
 
-use crate::app::{App, AppState, InboxFilter, SortOrder, Tab};
+use crate::app::{App, AppState, InboxFilter, SortOrder, StackPosition, Tab};
 use crate::types::{CiStatus, MergeStatus, NotificationReason, Priority};
 
 // ── Color Palette (Catppuccin Mocha-inspired) ───────────────────────
@@ -442,12 +442,24 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
     .height(1)
     .bottom_margin(1);
 
-    let rows: Vec<Row> = app
-        .my_prs
+    // Use display order (stacked PRs grouped together) or fall back to flat list
+    let display_order: Vec<_> = if app.my_prs_display_order.is_empty() {
+        app.my_prs.iter().enumerate().map(|(i, _)| crate::app::StackEntry {
+            original_index: i,
+            stack_position: StackPosition::Standalone,
+        }).collect()
+    } else {
+        app.my_prs_display_order.clone()
+    };
+
+    let rows: Vec<Row> = display_order
         .iter()
         .enumerate()
-        .map(|(i, pr)| {
-            let selected = i == app.selected_index();
+        .filter_map(|(display_i, entry)| {
+            let pr = app.my_prs.get(entry.original_index)?;
+            let selected = display_i == app.selected_index();
+            let show_repo = entry.stack_position == StackPosition::Standalone
+                || entry.stack_position == StackPosition::StackBase;
             let (accent, repo_style, title_style) = row_styles(&pr.repo, pr.is_draft, selected);
             let (ci_sym, ci_color) = ci_symbol(&pr.ci_status);
             let (merge_sym, merge_color) = merge_symbol(&pr.merge_status);
@@ -481,18 +493,46 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(Span::styled(age, Style::default().fg(SUBTEXT)))
             };
 
-            Row::new(vec![
-                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+            // Tree connector prefix for stacked PRs
+            let title_cell = match entry.stack_position {
+                StackPosition::StackBase | StackPosition::StackMiddle => {
+                    Cell::from(Line::from(vec![
+                        Span::styled("├─ ", Style::default().fg(OVERLAY_TEXT)),
+                        Span::styled(pr.title.clone(), title_style),
+                    ]))
+                }
+                StackPosition::StackTop => {
+                    Cell::from(Line::from(vec![
+                        Span::styled("└─ ", Style::default().fg(OVERLAY_TEXT)),
+                        Span::styled(pr.title.clone(), title_style),
+                    ]))
+                }
+                StackPosition::Standalone => {
+                    Cell::from(pr.title.clone()).style(title_style)
+                }
+            };
+
+            // Suppress repo name for non-first stack members
+            let repo_cell = if show_repo {
                 Cell::from(Line::from(vec![
                     accent,
                     Span::styled(pr.repo.clone(), repo_style),
-                ])),
-                Cell::from(pr.title.clone()).style(title_style),
+                ]))
+            } else {
+                Cell::from(Line::from(vec![
+                    Span::styled(" │ ", Style::default().fg(OVERLAY_TEXT)),
+                ]))
+            };
+
+            Some(Row::new(vec![
+                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+                repo_cell,
+                title_cell,
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 review_cell,
                 Cell::from(merge_sym).style(Style::default().fg(merge_color)),
                 age_cell,
-            ])
+            ]))
         })
         .collect();
 
@@ -537,12 +577,24 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
     .height(1)
     .bottom_margin(1);
 
-    let rows: Vec<Row> = app
-        .review_requests
+    // Use display order (stacked PRs grouped together) or fall back to flat list
+    let display_order: Vec<_> = if app.reviews_display_order.is_empty() {
+        app.review_requests.iter().enumerate().map(|(i, _)| crate::app::StackEntry {
+            original_index: i,
+            stack_position: StackPosition::Standalone,
+        }).collect()
+    } else {
+        app.reviews_display_order.clone()
+    };
+
+    let rows: Vec<Row> = display_order
         .iter()
         .enumerate()
-        .map(|(i, rr)| {
-            let selected = i == app.selected_index();
+        .filter_map(|(display_i, entry)| {
+            let rr = app.review_requests.get(entry.original_index)?;
+            let selected = display_i == app.selected_index();
+            let show_repo = entry.stack_position == StackPosition::Standalone
+                || entry.stack_position == StackPosition::StackBase;
             let (accent, repo_style, title_style) = row_styles(&rr.repo, rr.is_draft, selected);
             let (ci_sym, ci_color) = ci_symbol(&rr.ci_status);
             let (merge_sym, merge_color) = merge_symbol(&rr.merge_status);
@@ -554,19 +606,47 @@ fn draw_reviews_table(frame: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(Span::styled("●", Style::default().fg(OVERLAY_TEXT)))
             };
 
-            Row::new(vec![
-                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+            // Tree connector prefix for stacked PRs
+            let title_cell = match entry.stack_position {
+                StackPosition::StackBase | StackPosition::StackMiddle => {
+                    Cell::from(Line::from(vec![
+                        Span::styled("├─ ", Style::default().fg(OVERLAY_TEXT)),
+                        Span::styled(rr.title.clone(), title_style),
+                    ]))
+                }
+                StackPosition::StackTop => {
+                    Cell::from(Line::from(vec![
+                        Span::styled("└─ ", Style::default().fg(OVERLAY_TEXT)),
+                        Span::styled(rr.title.clone(), title_style),
+                    ]))
+                }
+                StackPosition::Standalone => {
+                    Cell::from(rr.title.clone()).style(title_style)
+                }
+            };
+
+            // Suppress repo name for non-first stack members
+            let repo_cell = if show_repo {
                 Cell::from(Line::from(vec![
                     accent,
                     Span::styled(rr.repo.clone(), repo_style),
-                ])),
-                Cell::from(rr.title.clone()).style(title_style),
+                ]))
+            } else {
+                Cell::from(Line::from(vec![
+                    Span::styled(" │ ", Style::default().fg(OVERLAY_TEXT)),
+                ]))
+            };
+
+            Some(Row::new(vec![
+                Cell::from(pri_sym).style(Style::default().fg(pri_color)),
+                repo_cell,
+                title_cell,
                 Cell::from(ci_sym).style(Style::default().fg(ci_color)),
                 Cell::from(merge_sym).style(Style::default().fg(merge_color)),
                 Cell::from(rr.author.clone()).style(Style::default().fg(SUBTEXT)),
                 Cell::from(rr.age_string()).style(Style::default().fg(SUBTEXT)),
                 direct_cell,
-            ])
+            ]))
         })
         .collect();
 
