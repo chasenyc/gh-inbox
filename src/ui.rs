@@ -493,24 +493,26 @@ fn draw_my_prs_table(frame: &mut Frame, area: Rect, app: &mut App) {
                 Cell::from(Span::styled(age, Style::default().fg(SUBTEXT)))
             };
 
-            // Tree connector prefix for stacked PRs
-            let title_cell = match entry.stack_position {
+            // Title cell: tree connector (for stacks) + assignee badge + title.
+            let mut title_spans: Vec<Span> = Vec::new();
+            match entry.stack_position {
                 StackPosition::StackBase | StackPosition::StackMiddle => {
-                    Cell::from(Line::from(vec![
-                        Span::styled("├─ ", Style::default().fg(OVERLAY_TEXT)),
-                        Span::styled(pr.title.clone(), title_style),
-                    ]))
+                    title_spans.push(Span::styled("├─ ", Style::default().fg(OVERLAY_TEXT)));
                 }
                 StackPosition::StackTop => {
-                    Cell::from(Line::from(vec![
-                        Span::styled("└─ ", Style::default().fg(OVERLAY_TEXT)),
-                        Span::styled(pr.title.clone(), title_style),
-                    ]))
+                    title_spans.push(Span::styled("└─ ", Style::default().fg(OVERLAY_TEXT)));
                 }
-                StackPosition::Standalone => {
-                    Cell::from(pr.title.clone()).style(title_style)
-                }
-            };
+                StackPosition::Standalone => {}
+            }
+            // Denote PRs that are here because you're assigned, not the author.
+            if !pr.is_authored_by_me {
+                title_spans.push(Span::styled(
+                    format!("@{} ", pr.author),
+                    Style::default().fg(LAVENDER),
+                ));
+            }
+            title_spans.push(Span::styled(pr.title.clone(), title_style));
+            let title_cell = Cell::from(Line::from(title_spans));
 
             // Suppress repo name for non-first stack members
             let repo_cell = if show_repo {

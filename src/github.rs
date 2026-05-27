@@ -182,11 +182,44 @@ impl GitHubClient {
     }
 
     pub async fn fetch_my_prs(&self) -> Result<Vec<PullRequest>> {
-        let query = format!(
+        // GitHub search can't OR author/assignee in one query, so run both and
+        // merge. Authored PRs are the source of truth; assigned PRs are additive.
+        let authored_query = format!(
             "author:{} type:pr state:open archived:false sort:updated-desc",
             self.username
         );
-        let url = format!("{}/search/issues?q={}&per_page=100", GITHUB_API, urlencoded(&query));
+        let assigned_query = format!(
+            "assignee:{} type:pr state:open archived:false sort:updated-desc",
+            self.username
+        );
+
+        let (authored, assigned) = tokio::join!(
+            self.search_prs(&authored_query),
+            self.search_prs(&assigned_query),
+        );
+
+        let mut prs = authored?;
+        let mut seen: std::collections::HashSet<String> =
+            prs.iter().map(|pr| pr.url.clone()).collect();
+
+        // A failed assignee fetch shouldn't blank the tab — fall open.
+        if let Ok(assigned) = assigned {
+            for pr in assigned {
+                if seen.insert(pr.url.clone()) {
+                    prs.push(pr);
+                }
+            }
+        }
+
+        prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(prs)
+    }
+
+    /// Run a PR search query and map results to `PullRequest`. Authorship is
+    /// derived from the item's user, so it's correct regardless of which
+    /// qualifier (author/assignee) the query used.
+    async fn search_prs(&self, query: &str) -> Result<Vec<PullRequest>> {
+        let url = format!("{}/search/issues?q={}&per_page=100", GITHUB_API, urlencoded(query));
 
         let resp: SearchResponse = self
             .auth_get(&url)
@@ -196,15 +229,22 @@ impl GitHubClient {
             .json()
             .await?;
 
-        let mut prs: Vec<PullRequest> = resp
+        let prs: Vec<PullRequest> = resp
             .items
             .into_iter()
             .map(|item| {
                 let repo = extract_repo(&item.repository_url);
+                let author = item
+                    .user
+                    .map(|u| u.login)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let is_authored_by_me = author.eq_ignore_ascii_case(&self.username);
                 PullRequest {
                     repo,
                     title: item.title,
                     url: item.html_url,
+                    author,
+                    is_authored_by_me,
                     ci_status: CiStatus::None,
                     review_status: ReviewStatus::NoReviewers,
                     merge_status: MergeStatus::Unknown,
@@ -219,7 +259,6 @@ impl GitHubClient {
             })
             .collect();
 
-        prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(prs)
     }
 

@@ -83,6 +83,11 @@ pub struct PullRequest {
     pub repo: String,
     pub title: String,
     pub url: String,
+    /// Login of the PR author.
+    pub author: String,
+    /// True when the current user opened this PR; false when it only appears
+    /// here because they're assigned to it.
+    pub is_authored_by_me: bool,
     pub ci_status: CiStatus,
     pub review_status: ReviewStatus,
     pub merge_status: MergeStatus,
